@@ -1,0 +1,38 @@
+# Render Blueprint: сайт на бесплатном плане. База — Supabase, картинки — Supabase Storage.
+services:
+  - type: web
+    name: kolo
+    runtime: node
+    plan: free
+    buildCommand: npm ci --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: PGSSL
+        value: "1"
+      - key: PG_POOL_MAX
+        value: "5"
+      - key: CLIENT_IP_HEADER
+        value: true-client-ip
+      # ниже — значения из Supabase, вводятся в панели Render при создании (в репозиторий не попадают)
+      - key: DATABASE_URL
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_REGION
+        sync: false
+      - key: S3_PUBLIC_URL
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false

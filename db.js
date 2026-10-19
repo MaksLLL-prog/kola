@@ -55,7 +55,7 @@ function compile(sql, params = {}) {
 let impl;
 if (PG) {
   const { Pool } = require('pg');
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 10, ssl: process.env.PGSSL === '1' ? { rejectUnauthorized: false } : undefined });
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: +process.env.PG_POOL_MAX || 10, ssl: process.env.PGSSL === '1' ? { rejectUnauthorized: false } : undefined });
   impl = {
     all: async (s, v) => (await pool.query(s, v)).rows,
     get: async (s, v) => (await pool.query(s, v)).rows[0],
@@ -65,6 +65,10 @@ if (PG) {
       for (const s of SCHEMA) await pool.query(s);
       for (const [t, c, ddl] of COLUMNS) await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS ${c} ${ddl}`);
       for (const s of AFTER) await pool.query(s);
+      // Supabase отдаёт таблицы схемы public через собственный REST API. Включаем RLS без политик: приложение ходит
+      // под владельцем базы (ему RLS не мешает), а доступ извне, в обход приложения, закрыт. На обычном Postgres безвредно.
+      for (const t of ['users', 'posts', 'likes', 'comments', 'follows', 'notifications', 'bookmarks', 'post_tags', 'messages'])
+        await pool.query(`ALTER TABLE ${t} ENABLE ROW LEVEL SECURITY`);
     },
   };
 } else {

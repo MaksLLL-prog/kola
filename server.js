@@ -26,6 +26,14 @@ const SECRET = loadSecret();
 const app = express();
 app.disable('x-powered-by');
 if (process.env.TRUST_PROXY) app.set('trust proxy', 1); // за Caddy/Nginx, иначе лимиты видят один IP
+// Render и подобные платформы кладут настоящий IP посетителя в отдельный заголовок (True-Client-IP):
+// цепочка прокси там длиннее одного узла, и без этого лимиты считали бы всех посетителей одним человеком.
+const IP_HEADER = (process.env.CLIENT_IP_HEADER || '').toLowerCase();
+if (IP_HEADER) app.use((req, res, next) => {
+  const v = req.headers[IP_HEADER];
+  if (v) Object.defineProperty(req, 'ip', { value: String(v).split(',')[0].trim(), configurable: true });
+  next();
+});
 app.use(express.json({ limit: '50kb' }));
 app.use((req, res, next) => {
   const img = ["'self'", 'data:', 'blob:', storage.publicOrigin].filter(Boolean).join(' ');

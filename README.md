@@ -23,6 +23,8 @@ npm start          # http://localhost:3000, база и картинки в ./da
 
 ## Продакшн (VPS + HTTPS)
 
+Самый простой путь — Supabase (база и картинки) + Render (сайт) + домен с reg.ru: **[DEPLOY.md](DEPLOY.md)**. Свой сервер: [DEPLOY-VPS.md](DEPLOY-VPS.md).
+
 Нужен сервер с Docker и домен, направленный на его IP.
 
 ```bash

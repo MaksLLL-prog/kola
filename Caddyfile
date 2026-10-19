@@ -4,3 +4,8 @@
 		flush_interval -1
 	}
 }
+
+# www.домен -> домен (нужна A-запись для www в DNS; без неё этот блок просто не получит сертификат)
+www.{$DOMAIN:localhost} {
+	redir https://{$DOMAIN:localhost}{uri} permanent
+}
