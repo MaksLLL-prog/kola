@@ -127,11 +127,13 @@ app.post('/api/login', limitAuth, route(async (req, res) => {
 }));
 
 app.get('/api/me', auth, route(async (req, res) => {
-  const [unread, unread_messages] = await Promise.all([
+  const [unread, unread_messages, last_msg, last_note] = await Promise.all([
     count('SELECT CAST(COUNT(*) AS INTEGER) AS n FROM notifications WHERE user_id = @me AND is_read = 0', { me: req.user.id }),
     count('SELECT CAST(COUNT(*) AS INTEGER) AS n FROM messages WHERE recipient_id = @me AND is_read = 0', { me: req.user.id }),
+    count('SELECT CAST(COALESCE(MAX(id), 0) AS INTEGER) AS n FROM messages WHERE recipient_id = @me', { me: req.user.id }),
+    count('SELECT CAST(COALESCE(MAX(id), 0) AS INTEGER) AS n FROM notifications WHERE user_id = @me', { me: req.user.id }),
   ]);
-  res.json({ ...req.user, onboarded: !!req.user.onboarded, unread, unread_messages });
+  res.json({ ...req.user, onboarded: !!req.user.onboarded, unread, unread_messages, last_msg, last_note });
 }));
 
 app.post('/api/me/onboarded', auth, route(async (req, res) => {
@@ -176,6 +178,19 @@ app.post('/api/notifications/read', auth, route(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Запасной канал: клиент опрашивает его, если поток событий (SSE) не работает из-за прокси.
+const limitUpdates = limiter(300, 60 * 1000, 'Слишком часто. Подождите минуту');
+app.get('/api/updates', auth, limitUpdates, route(async (req, res) => {
+  const me = req.user.id, msg = parseInt(req.query.msg) || 0, note = parseInt(req.query.note) || 0;
+  const [messages, notes] = await Promise.all([
+    db.all(`SELECT m.id, m.text, m.created_at, u.username, u.name, u.avatar FROM messages m JOIN users u ON u.id = m.sender_id
+      WHERE m.recipient_id = @me AND m.id > @msg ORDER BY m.id LIMIT 50`, { me, msg }),
+    db.all(`SELECT n.id, n.type, n.post_id, n.text, n.created_at, n.is_read, u.username, u.name, u.avatar FROM notifications n
+      JOIN users u ON u.id = n.actor_id WHERE n.user_id = @me AND n.id > @note ORDER BY n.id LIMIT 50`, { me, note }),
+  ]);
+  res.json({ messages, notes });
+}));
+
 app.post('/api/stream-ticket', auth, (req, res) => {
   const ticket = crypto.randomBytes(24).toString('hex');
   tickets.set(ticket, { id: req.user.id, exp: Date.now() + 30000 });
@@ -185,13 +200,15 @@ app.get('/api/stream', (req, res) => {
   const t = tickets.get(String(req.query.ticket));
   tickets.delete(String(req.query.ticket));
   if (!t || t.exp < Date.now()) return res.status(401).end();
-  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  // Connection: keep-alive не ставим: в HTTP/2 этот заголовок запрещён, а прокси платформ почти всегда говорят по HTTP/2
+  res.set({ 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' });
   res.flushHeaders();
-  res.write('retry: 5000\n\n');
+  // заполнитель пробивает прокси, которые копят первые килобайты ответа; hb — пульс, по нему клиент понимает, что поток живой
+  res.write(`: ${' '.repeat(2048)}\n\nretry: 5000\n\nevent: hb\ndata: 1\n\n`);
   const set = clients.get(t.id) || new Set(); clients.set(t.id, set);
   if (set.size >= 5) { const old = set.values().next().value; old.end(); set.delete(old); }
   set.add(res);
-  const beat = setInterval(() => res.write(': ping\n\n'), 25000);
+  const beat = setInterval(() => res.write('event: hb\ndata: 1\n\n'), 15000);
   req.on('close', () => { clearInterval(beat); set.delete(res); if (!set.size) clients.delete(t.id); });
 });
 

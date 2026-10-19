@@ -2,6 +2,7 @@
 const app = document.getElementById('app');
 let me = null;
 let unread = 0, unreadMsgs = 0, pending = 0, feedScope = null, stream = null, streamTimer = null;
+let lastBeat = 0, pollMsg = 0, pollNote = 0, pollHook = null, polling = false, pollTimer = null, pollLogged = false;
 let view = 0; // номер текущего экрана: запоздавший ответ от уже закрытого экрана ничего не рисует
 let io = null, msgHook = null, readHook = null; // io — наблюдатель бесконечной прокрутки; хуки — живые сообщения на открытом экране
 
@@ -67,7 +68,7 @@ async function api(path, { method = 'GET', body } = {}) {
   return data;
 }
 
-async function loadMe() { me = await api('/me'); unread = me.unread || 0; unreadMsgs = me.unread_messages || 0; return me; }
+async function loadMe() { me = await api('/me'); unread = me.unread || 0; unreadMsgs = me.unread_messages || 0; pollMsg = me.last_msg || 0; pollNote = me.last_note || 0; return me; }
 
 // ---------- каркас ----------
 function shell(inner, active) {
@@ -532,6 +533,7 @@ async function threadView(username) {
   const nearBottom = () => box.scrollHeight - box.scrollTop - box.clientHeight < 90;
   msgHook = (m) => {
     if (m.username.toLowerCase() !== peer.username.toLowerCase()) return false;
+    if (list.some((x) => x.id === m.id)) return true; // уже есть (пришло и по потоку, и по опросу)
     const stick = nearBottom();
     list.push({ id: m.id, text: m.text, created_at: m.created_at, mine: false, is_read: 1 });
     render(stick ? 'bottom' : 'keep');
@@ -543,6 +545,16 @@ async function threadView(username) {
     list.forEach((m) => { if (m.mine) m.is_read = 1; }); render('keep');
   };
 
+  pollHook = async () => { // запасной режим: подтягиваем новое и «прочитано» без потока событий
+    const d = await api('/messages/' + encodeURIComponent(peer.username));
+    let changed = false;
+    for (const m of d.messages) {
+      const have = list.find((x) => x.id === m.id);
+      if (!have) { list.push(m); changed = true; }
+      else if (m.mine && m.is_read && !have.is_read) { have.is_read = 1; changed = true; }
+    }
+    if (changed) { list.sort((a, b) => a.id - b.id); render(nearBottom() ? 'bottom' : 'keep'); }
+  };
   const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; };
   ta.addEventListener('input', grow);
   // Enter отправляет на компьютере; на телефоне Enter — перенос строки
@@ -612,8 +624,40 @@ function stopStream(retry) {
   clearTimeout(streamTimer); streamTimer = null;
   if (retry && me) streamTimer = setTimeout(() => { streamTimer = null; connectStream(); }, 4000);
 }
+function onNotification(n) {
+  pollNote = Math.max(pollNote, n.id || 0);
+  toast(`${n.name || n.username} ${NOTE[n.type] || ''}`);
+  const box = document.getElementById('notes');
+  if (box) { box.querySelector('.empty')?.remove(); box.insertAdjacentHTML('afterbegin', noteHTML(n)); api('/notifications/read', { method: 'POST' }).catch(() => {}); }
+  else { unread++; paintBadge(); }
+}
+function onMessage(m) {
+  pollMsg = Math.max(pollMsg, m.id || 0);
+  if (msgHook && msgHook(m)) return; // диалог с этим человеком открыт — сообщение уже на экране
+  unreadMsgs++; paintBadge(); toast(`${m.name || m.username}: ${m.text.slice(0, 50)}`);
+}
+
+// Запасной режим: если пульс от потока событий не приходит (прокси режет или копит SSE), раз в 5 секунд спрашиваем сервер сами.
+async function poll() {
+  if (!me || polling || document.hidden) return;
+  const alive = lastBeat && Date.now() - lastBeat < 45000;
+  if (alive) return;
+  if (stream && lastBeat) stopStream(true); // поток тихо умер — переподключаемся
+  polling = true;
+  try {
+    if (!pollLogged) { pollLogged = true; console.info('[kolo] поток событий недоступен, включён опрос раз в 5 секунд'); }
+    if (pollHook) await pollHook();
+    const d = await api(`/updates?msg=${pollMsg}&note=${pollNote}`);
+    d.notes.forEach(onNotification);
+    d.messages.forEach(onMessage);
+  } catch {}
+  polling = false;
+}
+function startPoller() { if (!pollTimer) { pollTimer = setInterval(poll, 5000); document.addEventListener('visibilitychange', () => !document.hidden && poll()); } }
+
 let connecting = false;
 async function connectStream() {
+  startPoller();
   if (stream || streamTimer || connecting || !me) return;
   connecting = true; // пока ждём билет, второй вызов (роутер дёргается дважды) не должен открыть второй поток
   try {
@@ -622,19 +666,11 @@ async function connectStream() {
     stream = new EventSource('/api/stream?ticket=' + ticket);
   } catch { return stopStream(true); }
   finally { connecting = false; }
-  stream.addEventListener('notification', (e) => {
-    const n = JSON.parse(e.data);
-    toast(`${n.name || n.username} ${NOTE[n.type] || ''}`);
-    const box = document.getElementById('notes');
-    if (box) { box.querySelector('.empty')?.remove(); box.insertAdjacentHTML('afterbegin', noteHTML(n)); api('/notifications/read', { method: 'POST' }).catch(() => {}); }
-    else { unread++; paintBadge(); }
-  });
-  stream.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (msgHook && msgHook(m)) return; // диалог с этим человеком открыт — сообщение уже на экране
-    unreadMsgs++; paintBadge(); toast(`${m.name || m.username}: ${m.text.slice(0, 50)}`);
-  });
-  stream.addEventListener('read', (e) => { if (readHook) readHook(JSON.parse(e.data).username); });
+  lastBeat = 0;
+  stream.addEventListener('hb', () => { if (!lastBeat) console.info('[kolo] живые обновления: поток событий работает'); lastBeat = Date.now(); });
+  stream.addEventListener('notification', (e) => { lastBeat = Date.now(); onNotification(JSON.parse(e.data)); });
+  stream.addEventListener('message', (e) => { lastBeat = Date.now(); onMessage(JSON.parse(e.data)); });
+  stream.addEventListener('read', (e) => { lastBeat = Date.now(); if (readHook) readHook(JSON.parse(e.data).username); });
   stream.addEventListener('post', (e) => {
     const d = JSON.parse(e.data);
     if (!feedScope || (feedScope === 'following' && !d.following)) return;
@@ -660,7 +696,7 @@ async function notificationsView() {
 // ---------- роутер ----------
 async function route() {
   document.title = 'Kolo'; view++;
-  io?.disconnect(); io = null; msgHook = null; readHook = null;
+  io?.disconnect(); io = null; msgHook = null; readHook = null; pollHook = null;
   const [, a, b] = (location.hash.slice(1) || '/').split('/');
   if (!localStorage.getItem('kolo_token')) return a === 'register' ? registerView() : authView();
   if (!me) { try { await loadMe(); } catch { return authView(); } }
