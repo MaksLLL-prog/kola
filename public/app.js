@@ -4,7 +4,14 @@ let me = null;
 let unread = 0, unreadMsgs = 0, pending = 0, feedScope = null, stream = null, streamTimer = null;
 let lastBeat = 0, pollMsg = 0, pollNote = 0, pollHook = null, polling = false, pollTimer = null, pollLogged = false;
 let view = 0; // номер текущего экрана: запоздавший ответ от уже закрытого экрана ничего не рисует
-let io = null, msgHook = null, readHook = null; // io — наблюдатель бесконечной прокрутки; хуки — живые сообщения на открытом экране
+let io = null, msgHook = null, readHook = null, noteHook = null; // io — бесконечная прокрутка; хуки — живые события на открытом экране
+const feedCache = {}; // последняя загруженная лента: при возврате на экран показываем сразу, а свежее подгружаем следом
+
+// тема: тёмная по умолчанию, светлая — по выбору (хранится в браузере)
+const getTheme = () => { try { return localStorage.getItem('kolo_theme') || 'dark'; } catch { return 'dark'; } };
+const applyTheme = (t) => { document.documentElement.dataset.theme = t; document.querySelector('meta[name=theme-color]')?.setAttribute('content', t === 'light' ? '#F4F5F8' : '#080C10'); };
+applyTheme(getTheme());
+function toggleTheme() { const t = getTheme() === 'light' ? 'dark' : 'light'; try { localStorage.setItem('kolo_theme', t); } catch {} applyTheme(t); const b = document.getElementById('themebtn2'); if (b) b.lastChild.textContent = t === 'light' ? 'Тёмная тема' : 'Светлая тема'; }
 
 // ---------- утилиты ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -22,29 +29,44 @@ function ago(iso) {
   if (a < 604800) return rtf.format(Math.round(sec / 86400), 'day');
   return new Date(iso).toLocaleDateString('ru', { day: 'numeric', month: 'short' });
 }
+const ic = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
 const I = {
-  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>',
-  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>',
-  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg>',
-  heart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 21s-8-4.9-8-11a4.5 4.5 0 0 1 8-2.8A4.5 4.5 0 0 1 20 10c0 6.100-8 11-8 11z"/></svg>',
-  comment: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.800 7L3 20.500l1.500-5.200A8 8 0 1 1 21 12z"/></svg>',
-  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
-  image: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="1.800"/><path d="M21 16l-5-5-9 9"/></svg>',
-  out: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>',
-  bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 0 1 12 0c0 6 2.500 8 2.500 8h-17S6 15 6 9zM10 21h4"/></svg>',
-  bookmark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h12v18l-6-4.500L6 21z"/></svg>',
-  repost: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/></svg>',
-  mail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 7l9 6 9-6"/></svg>',
-  flame: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22c4 0 7-2.700 7-6.500 0-3-2-5-3.500-6.500C15 7.500 15 6 14 3c-3 2-6 5-6 9.500 0-1-.8-2-1.500-2.500C5.500 11.500 5 13 5 15.500 5 19.300 8 22 12 22z"/></svg>',
-  back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.200" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>',
-  x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.500" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  home: ic('<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>'),
+  search: ic('<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>'),
+  user: ic('<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/>'),
+  userPlus: ic('<circle cx="10" cy="8" r="4"/><path d="M3 21c0-4.4 3.1-7 7-7s7 2.6 7 7M19 8v6M16 11h6"/>'),
+  heart: ic('<path d="M12 21s-8-4.9-8-11a4.5 4.5 0 0 1 8-2.8A4.5 4.5 0 0 1 20 10c0 6.1-8 11-8 11z"/>'),
+  comment: ic('<path d="M21 12a8 8 0 0 1-11.8 7L3 20.5l1.5-5.2A8 8 0 1 1 21 12z"/>'),
+  trash: ic('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'),
+  image: ic('<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-9 9"/>'),
+  out: ic('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>'),
+  bell: ic('<path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 8 2.5 8h-17S6 15 6 9zM10 21h4"/>'),
+  bookmark: ic('<path d="M6 3h12v18l-6-4.5L6 21z"/>'),
+  repost: ic('<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>'),
+  mail: ic('<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 7l9 6 9-6"/>'),
+  flame: ic('<path d="M12 22c4 0 7-2.7 7-6.5 0-3-2-5-3.5-6.5C15 7.5 15 6 14 3c-3 2-6 5-6 9.5 0-1-.8-2-1.5-2.5C5.500 11.500 5 13 5 15.500 5 19.300 8 22 12 22z"/>'),
+  back: ic('<path d="M19 12H5M11 6l-6 6 6 6"/>', 'stroke-width="2.2"'),
+  x: ic('<path d="M6 6l12 12M18 6L6 18"/>', 'stroke-width="2.5"'),
+  plus: ic('<path d="M12 5v14M5 12h14"/>', 'stroke-width="2.6"'),
+  send: ic('<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>'),
+  clip: ic('<path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8"/>'),
+  edit: ic('<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'),
+  at: ic('<circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/>'),
+  sun: ic('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
+  moon: ic('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'),
+  check: ic('<path d="M5 12.5l4.5 4.5L19 7.5"/>', 'stroke-width="2.4"'),
+  checks: ic('<path d="M1.5 12.5l4.5 4.5L15.5 7M11 16.5l1.500 1.500L22 7"/>', 'stroke-width="2.2"'),
+  alert: ic('<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/>'),
+  compose: ic('<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'),
 };
+const LOGO = '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="11" fill="none" stroke="var(--accent)" stroke-width="6"/></svg>';
 const pl = (n, one, few, many) => { const a = Math.abs(n) % 100, b = a % 10; return a > 10 && a < 20 ? many : b === 1 ? one : b > 1 && b < 5 ? few : many; };
 const timeOf = (iso) => new Date(iso).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' });
-function dayOf(iso) {
-  const d = new Date(iso), t = new Date();
-  const diff = Math.round((new Date(t.getFullYear(), t.getMonth(), t.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 864e5);
-  return diff === 0 ? 'Сегодня' : diff === 1 ? 'Вчера' : d.toLocaleDateString('ru', { day: 'numeric', month: 'long' });
+const dayDiff = (iso) => { const d = new Date(iso), t = new Date(); return Math.round((new Date(t.getFullYear(), t.getMonth(), t.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 864e5); };
+function dayOf(iso) { const diff = dayDiff(iso); return diff === 0 ? 'Сегодня' : diff === 1 ? 'Вчера' : new Date(iso).toLocaleDateString('ru', { day: 'numeric', month: 'long' }); }
+function convTime(iso) {
+  const d = dayDiff(iso);
+  return d === 0 ? timeOf(iso) : d === 1 ? 'Вчера' : d < 7 ? new Date(iso).toLocaleDateString('ru', { weekday: 'short' }) : new Date(iso).toLocaleDateString('ru', { day: 'numeric', month: 'short' });
 }
 let toastT;
 function toast(msg) {
@@ -52,14 +74,16 @@ function toast(msg) {
   t.textContent = msg; t.classList.add('show');
   clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2600);
 }
-const avatar = (u, cls = '') => `<span class="av ${cls}" style="--h:${hue(u.username)}">${u.avatar ? `<img src="${esc(u.avatar)}" alt="">` : `<span aria-hidden="true">${esc((u.name || u.username)[0].toUpperCase())}</span>`}</span>`;
+const avatar = (u, cls = '') => `<span class="av ${cls}" style="--h:${hue(u.username)}">${u.avatar ? `<img src="${esc(u.avatar)}" alt="" decoding="async">` : `<span aria-hidden="true">${esc((u.name || u.username)[0].toUpperCase())}</span>`}</span>`;
 
 async function api(path, { method = 'GET', body } = {}) {
   const headers = {};
   const tk = localStorage.getItem('kolo_token');
   if (tk) headers.Authorization = 'Bearer ' + tk;
   if (body && !(body instanceof FormData)) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(body); }
-  const r = await fetch('/api' + path, { method, headers, body });
+  let r;
+  try { r = await fetch('/api' + path, { method, headers, body }); }
+  catch { throw new Error('Нет соединения. Проверьте интернет'); }
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
     if (r.status === 401 && tk) { localStorage.removeItem('kolo_token'); me = null; location.hash = '#/login'; }
@@ -68,32 +92,100 @@ async function api(path, { method = 'GET', body } = {}) {
   return data;
 }
 
+// Фото перед отправкой уменьшаем на устройстве: на телефоне снимок весит 5–10 МБ, а нужно ~300 КБ. Быстрее загрузка, нет лимита 5 МБ.
+async function prepImage(file, max = 1600) {
+  if (!/^image\/(jpeg|png|webp)$/.test(file.type) || (file.size < 250 * 1024)) return file;
+  try {
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    if (k === 1 && file.size < 1.2 * 1024 * 1024) return file;
+    const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(bmp, 0, 0, c.width, c.height);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
+    return blob && blob.size < file.size ? new File([blob], 'photo.jpg', { type: 'image/jpeg' }) : file;
+  } catch { return file; }
+}
+async function pickedImage(file) { // проверка и подготовка выбранной картинки; null — отказ (уже показан тост)
+  if (!file) return null;
+  if (!/^image\//.test(file.type)) { toast('Нужна картинка: JPG, PNG, WebP или GIF'); return null; }
+  const f = await prepImage(file);
+  if (f.size > 5 * 1024 * 1024) { toast('Файл больше 5 МБ'); return null; }
+  return f;
+}
+
 async function loadMe() { me = await api('/me'); unread = me.unread || 0; unreadMsgs = me.unread_messages || 0; pollMsg = me.last_msg || 0; pollNote = me.last_note || 0; return me; }
 
-// ---------- каркас ----------
-function shell(inner, active) {
-  const link = (h, k, label, icon) => `<a href="${h}" class="${active === k ? 'on' : ''}" ${active === k ? 'aria-current="page"' : ''}>${icon}<span>${label}</span></a>`;
-  app.innerHTML = `<div class="shell">
+// ---------- каркас: строится один раз, дальше меняется только содержимое ----------
+function ensureShell() {
+  if (document.getElementById('main')) return;
+  const a = (k, h, label, icon, cls = '') => `<a data-k="${k}" href="${h}" class="${cls}">${icon}<span>${label}</span></a>`;
+  app.innerHTML = `<header class="topbar"><div class="topin">
+      <a class="tlogo" href="#/">${LOGO}<span>Kolo</span></a>
+      <form class="tsearch" id="tsearch" role="search">${I.search}<input name="q" type="search" placeholder="Поиск" aria-label="Поиск" autocomplete="off"></form>
+      <a class="tuser" href="#/u/${esc(me.username)}" title="Моя страница">${avatar(me, 'xs')}<span>${esc(me.name || me.username)}</span></a></div></header>
+    <div class="shell">
     <nav class="nav" aria-label="Основное меню">
-      <a class="logo" href="#/"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="11" fill="none" stroke="var(--blue)" stroke-width="6"/></svg>Kolo</a>
-      ${link('#/', 'home', 'Лента', I.home)}${link('#/popular', 'popular', 'Популярное', I.flame)}${link('#/search', 'search', 'Поиск', I.search)}${link('#/messages', 'msgs', 'Сообщения', I.mail + '<i class="badge" id="mbadge" hidden></i>')}${link('#/bookmarks', 'bm', 'Закладки', I.bookmark)}${link('#/notifications', 'notes', 'Уведомления', I.bell + '<i class="badge" id="badge" hidden></i>')}${link('#/u/' + esc(me.username), 'me', 'Профиль', I.user)}
-      <span class="spacer"></span>
-      <button class="navbtn" id="logout">${I.out}<span>Выйти</span></button>
+      ${a('home', '#/', 'Лента', I.home)}${a('popular', '#/popular', 'Популярное', I.flame, 'dsk')}${a('search', '#/search', 'Поиск', I.search)}
+      <a data-k="new" href="#/new" class="plus" aria-label="Новая запись">${I.plus}</a>
+      <a data-k="msgs" href="#/messages">${I.mail}<span>Сообщения</span><i class="badge" id="mbadge" hidden></i></a>
+      ${a('bm', '#/bookmarks', 'Закладки', I.bookmark, 'dsk')}
+      <a data-k="notes" href="#/notifications" class="dsk">${I.bell}<span>Уведомления</span><i class="badge" id="badge" hidden></i></a>
+      <a data-k="me" href="#/u/${esc(me.username)}">${I.user}<span>Профиль</span></a>
+      <div class="navfoot dsk"><a href="#/new">Новая запись</a><button type="button" id="themebtn2"><span hidden></span>${getTheme() === 'light' ? 'Тёмная тема' : 'Светлая тема'}</button><button type="button" id="logout">Выйти</button></div>
     </nav>
-    <main class="main" id="main">${inner}</main>
+    <div class="col">
+      <header class="head" id="head"></header>
+      <main class="main" id="main"></main>
+    </div>
     <aside class="side" id="side"></aside></div>`;
-  document.getElementById('logout').onclick = () => { stopStream(); localStorage.removeItem('kolo_token'); me = null; location.hash = '#/login'; };
-  paintBadge();
-  loadSuggestions();
+  document.getElementById('logout').onclick = logout;
+  document.getElementById('themebtn2').onclick = toggleTheme;
+  document.getElementById('tsearch').onsubmit = (e) => { e.preventDefault(); const q = e.target.q.value.trim(); if (q) { location.hash = '#/search/' + encodeURIComponent(q); e.target.q.blur(); } };
+  renderSide();
 }
-async function loadSuggestions() {
-  try {
-    const [list, tr] = await Promise.all([api('/suggestions'), api('/trending').catch(() => ({ tags: [] }))]);
-    if (!document.getElementById('side')) return;
-    const sug = list.length ? `<div class="sheet"><h2>Кого читать</h2>${list.map(sugHTML).join('')}</div>` : '';
-    const tags = tr.tags.length ? `<div class="sheet"><h2>В тренде</h2>${tr.tags.slice(0, 6).map((t) => `<a class="trend" href="#/tag/${encodeURIComponent(t.tag)}"><b>#${esc(t.tag)}</b><span>${t.n} ${pl(t.n, 'пост', 'поста', 'постов')}</span></a>`).join('')}</div>` : '';
-    document.getElementById('side').innerHTML = sug + tags;
-  } catch {}
+function logout() {
+  stopStream(); localStorage.removeItem('kolo_token'); me = null; unread = unreadMsgs = 0; document.title = 'Kolo';
+  if (location.hash === '#/login') route(); else location.hash = '#/login';
+}
+
+// page({ key, title, back, right, mode }): подсветка меню, шапка; возвращает <main>
+// mode: 'chat' — чат на весь экран; 'focus' — без нижней панели (создание поста, пост, комментарии)
+function page(o) {
+  ensureShell();
+  document.body.dataset.mode = o.mode || '';
+  document.querySelectorAll('.nav [data-k]').forEach((el) => {
+    const on = el.dataset.k === o.key;
+    el.classList.toggle('on', on);
+    on ? el.setAttribute('aria-current', 'page') : el.removeAttribute('aria-current');
+  });
+  document.getElementById('head').innerHTML = `${o.back ? `<button class="icon hback" id="hback" aria-label="Назад">${I.back}</button>` : ''}
+    <div class="ht">${o.title || ''}</div>
+    <div class="hr">${o.right || ''}<a class="icon hbell" href="#/notifications" aria-label="Уведомления">${I.bell}<i class="badge" id="hbadge" hidden></i></a></div>`;
+  const back = document.getElementById('hback');
+  if (back) back.onclick = () => (history.length > 1 ? history.back() : (location.hash = o.backTo || '#/'));
+  paintBadge();
+  const main = document.getElementById('main');
+  main.className = 'main' + (o.mode ? ' m-' + o.mode : '');
+  return main;
+}
+const titleOf = (t) => `<h1>${t}</h1>`;
+const logoTitle = `<a class="mlogo" href="#/">${LOGO}<span>Kolo</span></a><h1 class="dskt">Лента</h1>`;
+
+// правая колонка (компьютер): поиск, кого читать, тренды. Данные кэшируем — переходы между экранами их не перезагружают
+let sideData = null, sideAt = 0;
+function sideHTML() {
+  const s = sideData || { list: [], tags: [] };
+  const sug = s.list.length ? `<section class="card sidebox"><h2>Рекомендуемые</h2>${s.list.map(sugHTML).join('')}</section>` : '';
+  const tags = s.tags.length ? `<section class="card sidebox"><h2>Темы дня</h2>${s.tags.slice(0, 5).map((t) => `<a class="trend" href="#/tag/${encodeURIComponent(t.tag)}"><b>#${esc(t.tag)}</b><span>${t.n} ${pl(t.n, 'пост', 'поста', 'постов')}</span></a>`).join('')}<a class="trend more" href="#/popular">Показать ещё</a></section>` : '';
+  return `${sug}${tags}`;
+}
+function renderSide() {
+  const side = document.getElementById('side'); if (!side) return;
+  side.innerHTML = sideHTML();
+  if (sideData && Date.now() - sideAt < 60000) return;
+  Promise.all([api('/suggestions'), api('/trending').catch(() => ({ tags: [] }))]).then(([list, tr]) => {
+    sideData = { list, tags: tr.tags }; sideAt = Date.now(); renderSide();
+  }).catch(() => {});
 }
 const sugHTML = (u) => `<div class="sug"><a href="#/u/${esc(u.username)}">${avatar(u, 'sm')}</a>
   <a class="who" href="#/u/${esc(u.username)}"><b>${esc(u.name || u.username)}</b><span>@${esc(u.username)}</span></a>
@@ -102,61 +194,67 @@ const sugHTML = (u) => `<div class="sug"><a href="#/u/${esc(u.username)}">${avat
 // ---------- посты ----------
 function postHTML(p) {
   const rp = p.reposted_by ? `<div class="rp muted">${I.repost}<span>${p.reposted_by === me.username ? 'Вы сделали репост' : `Репост от <a href="#/u/${esc(p.reposted_by)}">${esc(p.reposted_by_name || p.reposted_by)}</a>`}</span></div>` : '';
-  return `<article class="post" data-id="${p.id}">
-    <a href="#/u/${esc(p.username)}" tabindex="-1" aria-hidden="true">${avatar(p)}</a>
-    <div class="pbody">${rp}
-      <header><a class="pname" href="#/u/${esc(p.username)}">${esc(p.name || p.username)}</a>
-        <span class="muted">@${esc(p.username)}</span>
-        <a class="muted" href="#/post/${p.id}" title="${esc(new Date(p.created_at).toLocaleString('ru'))}">${ago(p.created_at)}</a>
-        ${p.username === me.username ? `<button class="icon del" data-del="${p.id}" aria-label="Удалить пост">${I.trash}</button>` : ''}</header>
+  return `<article class="card post" data-id="${p.id}">${rp}
+    <header class="ph"><a class="pav" href="#/u/${esc(p.username)}" tabindex="-1" aria-hidden="true">${avatar(p)}</a>
+      <div class="pmeta"><a class="pname" href="#/u/${esc(p.username)}">${esc(p.name || p.username)}</a>
+        <div class="psub"><span class="pun">@${esc(p.username)}</span><a class="ptime" href="#/post/${p.id}" title="${esc(new Date(p.created_at).toLocaleString('ru'))}">${ago(p.created_at)}</a></div></div>
+      ${p.username === me.username ? `<button class="icon del" data-del="${p.id}" aria-label="Удалить запись">${I.trash}</button>` : ''}</header>
+    <div class="pbody">
       ${p.text ? `<p class="ptext">${linkify(p.text)}</p>` : ''}
-      ${p.image ? `<img class="pimg" src="${esc(p.image)}" alt="Изображение к посту" loading="lazy">` : ''}
-      <footer>
-        <button class="act like ${p.liked ? 'on' : ''}" data-like="${p.id}" aria-pressed="${p.liked}" aria-label="Нравится">${I.heart}<span>${p.likes || ''}</span></button>
-        <a class="act" href="#/post/${p.id}" aria-label="Комментарии">${I.comment}<span>${p.comments || ''}</span></a>
-        <button class="act rep ${p.reposted ? 'on' : ''}" data-repost="${p.id}" aria-pressed="${!!p.reposted}" aria-label="Репост">${I.repost}<span>${p.reposts || ''}</span></button>
-        <button class="act bm grow ${p.bookmarked ? 'on' : ''}" data-bm="${p.id}" aria-pressed="${!!p.bookmarked}" aria-label="В закладки">${I.bookmark}</button>
-      </footer>
-    </div></article>`;
+      ${p.image ? `<img class="pimg" data-zoom src="${esc(p.image)}" alt="Изображение к записи" loading="lazy" decoding="async">` : ''}
+    </div>
+    <footer>
+      <button class="act like ${p.liked ? 'on' : ''}" data-like="${p.id}" aria-pressed="${p.liked}" aria-label="Нравится">${I.heart}<span>${p.likes || ''}</span></button>
+      <a class="act" href="#/post/${p.id}" aria-label="Комментарии">${I.comment}<span>${p.comments || ''}</span></a>
+      <button class="act rep ${p.reposted ? 'on' : ''}" data-repost="${p.id}" aria-pressed="${!!p.reposted}" aria-label="Рассказать друзьям">${I.repost}<span>${p.reposts || ''}</span></button>
+      <button class="act bm grow ${p.bookmarked ? 'on' : ''}" data-bm="${p.id}" aria-pressed="${!!p.bookmarked}" aria-label="В закладки">${I.bookmark}</button>
+    </footer></article>`;
 }
+const skel = (n = 3) => Array.from({ length: n }, () => '<div class="card post skel" aria-hidden="true"><div class="ph"><span class="av"></span><div class="pmeta"><i class="l1"></i></div></div><div class="pbody"><i class="l2"></i><i class="l3"></i></div></div>').join('');
 const feedList = (posts, emptyHTML) => posts.length ? posts.map(postHTML).join('') : emptyHTML;
+const emptyBox = (title, text = '', extra = '') => `<div class="card empty"><b>${title}</b>${text}${extra}</div>`;
+const errBox = (e) => emptyBox(esc(e.message), '', '<a class="btn" href="#/">В ленту</a>');
 
-function composerHTML() {
-  return `<form class="sheet composer" id="composer">${avatar(me)}
+// Композер: общий для ленты и страницы «Новый пост». Возвращает функцию «Опубликовать».
+function composerHTML(withSubmit = true) {
+  return `<form class="card composer" id="composer">${avatar(me)}
     <div class="col">
       <textarea name="text" rows="2" maxlength="500" placeholder="Что нового?" aria-label="Текст поста"></textarea>
       <div class="preview" id="preview" hidden><img alt="Предпросмотр"><button type="button" class="icon" id="unpick" aria-label="Убрать картинку">${I.x}</button></div>
       <div class="row">
-        <label class="icon" title="Добавить картинку" style="cursor:pointer">${I.image}<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" id="pick" hidden></label>
+        <label class="icon" title="Добавить фото" aria-label="Добавить фото" style="cursor:pointer">${I.image}<input type="file" accept="image/*" id="pick" hidden></label>
         <span class="count" id="count">0 / 500</span>
-        <button class="btn" type="submit">Опубликовать</button>
+        ${withSubmit ? '<button class="btn" type="submit">Опубликовать</button>' : ''}
       </div></div></form>`;
 }
 function bindComposer(onPost) {
   const f = document.getElementById('composer'), ta = f.text, pick = document.getElementById('pick'), prev = document.getElementById('preview');
+  let file = null;
   ta.addEventListener('input', () => {
     ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px';
     const c = document.getElementById('count'); c.textContent = `${ta.value.length} / 500`; c.classList.toggle('over', ta.value.length > 480);
   });
-  pick.onchange = () => {
-    const file = pick.files[0];
-    if (!file) return;
-    if (file.size > 5 * 1024 * 1024) { pick.value = ''; return toast('Файл больше 5 МБ'); }
-    prev.querySelector('img').src = URL.createObjectURL(file); prev.hidden = false;
+  const setFile = (x) => {
+    file = x; prev.hidden = !x;
+    if (x) prev.querySelector('img').src = URL.createObjectURL(x); else pick.value = '';
   };
-  document.getElementById('unpick').onclick = () => { pick.value = ''; prev.hidden = true; };
+  pick.onchange = async () => { const x = await pickedImage(pick.files[0]); if (x) setFile(x); else pick.value = ''; };
+  ta.addEventListener('paste', async (e) => { const it = [...(e.clipboardData?.files || [])].find((x) => x.type.startsWith('image/')); if (it) { e.preventDefault(); const x = await pickedImage(it); if (x) setFile(x); } });
+  document.getElementById('unpick').onclick = () => setFile(null);
   f.onsubmit = async (e) => {
     e.preventDefault();
-    const btn = f.querySelector('.btn'); btn.disabled = true;
+    if (!ta.value.trim() && !file) return toast('Напишите текст или добавьте фото');
+    const btns = document.querySelectorAll('[data-publish], #composer .btn'); btns.forEach((b) => (b.disabled = true));
     const fd = new FormData(); fd.append('text', ta.value);
-    if (pick.files[0]) fd.append('image', pick.files[0]);
+    if (file) fd.append('image', file);
     try {
       const p = await api('/posts', { method: 'POST', body: fd });
-      f.reset(); prev.hidden = true; ta.style.height = 'auto'; document.getElementById('count').textContent = '0 / 500';
+      f.reset(); setFile(null); ta.style.height = 'auto'; document.getElementById('count').textContent = '0 / 500';
       onPost(p); toast('Опубликовано');
     } catch (err) { toast(err.message); }
-    btn.disabled = false;
+    btns.forEach((b) => (b.disabled = false));
   };
+  return () => f.requestSubmit();
 }
 
 // бесконечная прокрутка: когда «хвост» списка подъезжает к экрану, подгружаем следующую порцию.
@@ -182,15 +280,18 @@ function infinite(box, first, next) {
     }
     busy = false;
   };
-  const observer = new IntersectionObserver((en) => { if (en[0].isIntersecting) load(); }, { rootMargin: '600px' });
+  const observer = new IntersectionObserver((en) => { if (en[0].isIntersecting) load(); }, { rootMargin: '700px' });
   observer.observe(s); io = observer;
 }
 const lastCur = (batch) => batch[batch.length - 1].cur;
 
+// сегментированные вкладки-ссылки
+const seg = (items, cur) => `<nav class="seg" role="tablist">${items.map(([k, h, t]) => `<a href="${h}" role="tab" class="${k === cur ? 'on' : ''}" aria-selected="${k === cur}">${t}</a>`).join('')}</nav>`;
+
 // ---------- экраны ----------
 function authView() {
   app.innerHTML = `<div class="authwrap"><form class="sheet authbox" id="auth">
-    <h1>С возвращением</h1><p>Войдите, чтобы увидеть ленту.</p>
+    <div class="authlogo">${LOGO}<span>Kolo</span></div><h1>С возвращением</h1><p>Войдите, чтобы увидеть ленту.</p>
     <label class="field"><span>Имя пользователя</span><input name="username" required maxlength="20" autocomplete="username" autocapitalize="none"></label>
     <label class="field"><span>Пароль</span><input name="password" type="password" required autocomplete="current-password"></label>
     <p class="err" id="err" role="alert"></p>
@@ -210,7 +311,7 @@ function authView() {
 function wizardShell(step, inner) {
   const titles = ['Аккаунт', 'Профиль', 'Подписки'];
   app.innerHTML = `<div class="authwrap"><div class="sheet authbox wiz">
-    <ol class="steps" aria-label="Шаги регистрации">${titles.map((t, i) => `<li class="${i + 1 < step ? 'done' : i + 1 === step ? 'cur' : ''}" ${i + 1 === step ? 'aria-current="step"' : ''}><i>${i + 1 < step ? '✓' : i + 1}</i><span>${t}</span></li>`).join('')}</ol>
+    <div class="authlogo">${LOGO}<span>Kolo</span></div><ol class="steps" aria-label="Шаги регистрации">${titles.map((t, i) => `<li class="${i + 1 < step ? 'done' : i + 1 === step ? 'cur' : ''}" ${i + 1 === step ? 'aria-current="step"' : ''}><i>${i + 1 < step ? '✓' : i + 1}</i><span>${t}</span></li>`).join('')}</ol>
     ${inner}</div></div>`;
 }
 
@@ -320,40 +421,59 @@ async function welcomeView(step) {
 
 async function feedView(scope) {
   const v = view;
-  shell(`${composerHTML()}
-    <div class="tabs" style="margin-top:14px"><a href="#/" class="${scope === 'all' ? 'on' : ''}">Все</a><a href="#/following" class="${scope === 'following' ? 'on' : ''}">Подписки</a></div>
-    <button class="banner" id="banner" hidden></button>
-    <div class="sheet" id="feed"></div>`, 'home');
+  const main = page({ key: 'home', title: logoTitle });
+  const empty = emptyBox(scope === 'all' ? 'Здесь пока тихо' : 'В подписках пусто', scope === 'all' ? 'Напишите первый пост.' : 'Подпишитесь на кого-нибудь — их посты появятся здесь.');
+  const cached = feedCache[scope];
+  main.innerHTML = `${composerHTML()}${seg([['all', '#/', 'Все'], ['following', '#/following', 'Подписки'], ['popular', '#/popular', 'Популярное']], scope)}
+    <button class="banner" id="banner" hidden></button><div class="list" id="feed">${cached ? feedList(cached, empty) : skel(3)}</div>`;
   feedScope = scope; pending = 0;
   document.getElementById('banner').onclick = () => route();
   const feed = document.getElementById('feed');
   const q = (before) => api(`/feed?scope=${scope}${before ? '&before=' + before : ''}`);
-  const empty = `<div class="empty"><b>${scope === 'all' ? 'Здесь пока тихо' : 'В подписках пусто'}</b>${scope === 'all' ? 'Напишите первый пост.' : 'Подпишитесь на кого-нибудь — их посты появятся здесь.'}</div>`;
-  bindComposer((p) => { feed.querySelector('.empty')?.remove(); feed.insertAdjacentHTML('afterbegin', postHTML(p)); });
-  const posts = await q().catch((e) => (toast(e.message), []));
+  bindComposer((p) => { delete feedCache.all; delete feedCache.following; feed.querySelector('.empty')?.remove(); feed.insertAdjacentHTML('afterbegin', postHTML(p)); });
+  const posts = await q().catch((e) => (toast(e.message), cached || []));
   if (v !== view) return;
-  feed.innerHTML = feedList(posts, empty); infinite(feed, posts, (n, last) => q(lastCur(last)));
+  const sig = (l) => JSON.stringify((l || []).map((p) => [p.id, p.likes, p.comments, p.reposts, p.liked, p.reposted_by]));
+  if (!cached || sig(cached) !== sig(posts)) feed.innerHTML = feedList(posts, empty);
+  feedCache[scope] = posts;
+  infinite(feed, posts, (n, last) => q(lastCur(last)));
+}
+
+function newPostView() {
+  const main = page({ key: 'new', title: titleOf('Новый пост'), back: true, mode: 'focus', right: '<button class="btn sm" id="pubtop" data-publish>Опубликовать</button>' });
+  main.innerHTML = composerHTML(false);
+  const submit = bindComposer(() => { delete feedCache.all; delete feedCache.following; location.hash = '#/'; });
+  document.getElementById('pubtop').onclick = submit;
+  document.querySelector('#composer textarea').focus();
 }
 
 async function profileView(username) {
-  const v = view;
-  shell('<div class="sheet empty">Загрузка…</div>', username === me.username ? 'me' : '');
+  const v = view, own = username.toLowerCase() === me.username.toLowerCase();
+  const main = page({ key: own ? 'me' : '', title: titleOf(own ? 'Профиль' : '&nbsp;'), back: !own });
+  main.innerHTML = `<div class="card pcard"><div class="pctop"><span class="av xl" style="--h:${hue(username)}"></span></div></div><div class="list">${skel(2)}</div>`;
   let data;
   try { data = await api('/users/' + encodeURIComponent(username)); }
-  catch (e) { return void (v === view && (document.getElementById('main').innerHTML = errBox(e))); }
+  catch (e) { return void (v === view && (main.innerHTML = errBox(e))); }
   if (v !== view) return;
-  const u = data.user, own = u.username === me.username;
-  document.title = `${u.name || u.username} — Kolo`;
-  document.getElementById('main').innerHTML = `<div class="sheet">
-    <div class="cover" style="--h:${hue(u.username)}"></div>
-    <div class="phead"><div class="top">${avatar(u, 'xl')}
-      ${own ? '<button class="btn line" id="edit">Изменить профиль</button>' : `<div class="btns"><a class="btn line" href="#/messages/${esc(u.username)}">Написать</a><button class="btn ${u.isFollowing ? 'line' : ''}" data-follow="${esc(u.username)}" id="fbtn">${u.isFollowing ? 'Вы читаете' : 'Читать'}</button></div>`}</div>
-      <h1>${esc(u.name || u.username)}</h1><div class="muted">@${esc(u.username)}</div>
-      ${u.bio ? `<p class="bio">${linkify(u.bio)}</p>` : ''}
-      <div class="stats"><span><b>${u.posts}</b> постов</span><span><b id="fcount">${u.followers}</b> читателей</span><span><b>${u.following}</b> в подписках</span></div></div></div>
-    <div class="sheet" id="feed">${feedList(data.posts, `<div class="empty"><b>Постов пока нет</b>${own ? 'Опубликуйте первый на главной.' : ''}</div>`)}</div>`;
+  const u = data.user;
+  document.title = baseTitle = `${u.name || u.username} — Kolo`;
+  if (!own) document.querySelector('#head .ht').innerHTML = titleOf(esc(u.name || u.username));
+  const row = (id, icon, label, extra = '') => `<${id.startsWith('#') ? 'a href="' + id + '"' : 'button type="button" id="' + id + '"'} class="mrow2">${icon}<span>${label}</span>${extra}</${id.startsWith('#') ? 'a' : 'button'}>`;
+  const st = (n, label, id = '') => `<div><b${id ? ` id="${id}"` : ''}>${n}</b><span>${label}</span></div>`;
+  main.innerHTML = `<section class="card pcard">
+    <div class="pctop">${avatar(u, 'xl')}
+      <div class="pcinfo"><h2>${esc(u.name || u.username)}</h2><div class="muted">@${esc(u.username)}</div>
+        ${u.bio ? `<p class="bio">${linkify(u.bio)}</p>` : ''}
+        <div class="pcbtns">${own ? '<button class="btn line" id="edit">Редактировать</button>' : `<button class="btn ${u.isFollowing ? 'line' : ''}" data-follow="${esc(u.username)}" id="fbtn">${u.isFollowing ? 'Вы читаете' : 'Читать'}</button><a class="btn line" href="#/messages/${esc(u.username)}">Написать</a>`}</div></div></div>
+    <div class="stats">${st(u.posts, pl(u.posts, 'запись', 'записи', 'записей'))}${st(u.followers, pl(u.followers, 'читатель', 'читателя', 'читателей'), 'fcount')}${st(u.following, 'в подписках')}</div></section>
+    ${own ? `<section class="card menu">${row('#/bookmarks', I.bookmark, 'Закладки')}${row('#/notifications', I.bell, 'Уведомления')}${row('themebtn', getTheme() === 'light' ? I.moon : I.sun, getTheme() === 'light' ? 'Тёмная тема' : 'Светлая тема')}${row('logout2', I.out, 'Выйти')}</section>` : ''}
+    <div class="list" id="feed">${feedList(data.posts, emptyBox('Постов пока нет', own ? 'Опубликуйте первый.' : ''))}</div>`;
   infinite(document.getElementById('feed'), data.posts, (n, last) => api(`/users/${encodeURIComponent(username)}?before=${lastCur(last)}`).then((d) => d.posts));
-  if (own) document.getElementById('edit').onclick = () => editDialog();
+  if (own) {
+    document.getElementById('edit').onclick = () => editDialog();
+    document.getElementById('logout2').onclick = logout;
+    document.getElementById('themebtn').onclick = () => { toggleTheme(); route(); };
+  }
 }
 
 function editDialog() {
@@ -361,39 +481,43 @@ function editDialog() {
   d.innerHTML = `<form method="dialog" id="eform"><h2>Изменить профиль</h2>
     <label class="field"><span>Имя</span><input name="name" maxlength="40" value="${esc(me.name)}"></label>
     <label class="field"><span>О себе</span><textarea name="bio" rows="3" maxlength="160">${esc(me.bio)}</textarea></label>
-    <label class="field"><span>Аватар (до 5 МБ)</span><input name="avatar" type="file" accept="image/jpeg,image/png,image/webp,image/gif"></label>
+    <label class="field"><span>Аватар</span><input name="avatar" type="file" accept="image/*"></label>
     <div class="actions"><button type="button" class="btn line" id="cancel">Отмена</button><button class="btn" type="submit">Сохранить</button></div></form>`;
   document.body.appendChild(d); d.showModal();
   d.querySelector('#cancel').onclick = () => d.close();
   d.addEventListener('close', () => d.remove());
   d.querySelector('#eform').onsubmit = async (e) => {
     e.preventDefault();
-    const fd = new FormData(e.target);
-    if (!fd.get('avatar').size) fd.delete('avatar');
-    try { me = await api('/me', { method: 'PUT', body: fd }); d.close(); toast('Профиль сохранён'); route(); }
+    const fd = new FormData(e.target), file = fd.get('avatar');
+    fd.delete('avatar');
+    if (file && file.size) { const f = await pickedImage(file); if (!f) return; fd.append('avatar', f); }
+    try { me = await api('/me', { method: 'PUT', body: fd }); d.close(); toast('Профиль сохранён'); sideData = null; app.innerHTML = ''; route(); }
     catch (err) { toast(err.message); }
   };
 }
 
 async function postView(id) {
   const v = view;
-  shell('<div class="sheet empty">Загрузка…</div>', '');
+  const main = page({ key: '', title: titleOf('Пост'), back: true, mode: 'focus' });
+  main.innerHTML = `<div class="list">${skel(1)}</div>`;
   let data;
   try { data = await api('/posts/' + id); }
-  catch (e) { return void (v === view && (document.getElementById('main').innerHTML = errBox(e))); }
+  catch (e) { return void (v === view && (main.innerHTML = errBox(e))); }
   if (v !== view) return;
   const replies = {};
   data.comments.forEach((c) => { if (c.parent_id) (replies[c.parent_id] ||= []).push(c); });
-  const cHTML = (c, isReply) => `<div class="comment ${isReply ? 'reply' : ''}">${avatar(c, 'sm')}<div class="pbody"><header>
-    <a class="pname" href="#/u/${esc(c.username)}">${esc(c.name || c.username)}</a><span class="muted">${ago(c.created_at)}</span>
+  const cHTML = (c, isReply) => `<div class="comment ${isReply ? 'reply' : ''}"><a href="#/u/${esc(c.username)}">${avatar(c, 'sm')}</a><div class="pbody"><header>
+    <a class="pname" href="#/u/${esc(c.username)}">${esc(c.name || c.username)}</a><span class="muted ptime">${ago(c.created_at)}</span>
     <button class="link" data-reply="${c.parent_id || c.id}" data-who="${esc(c.username)}">Ответить</button></header>
     <p class="ptext">${linkify(c.text)}</p></div></div>`;
   const threadHTML = (c) => `<div class="thread" data-root="${c.id}">${cHTML(c)}${(replies[c.id] || []).map((r) => cHTML(r, true)).join('')}</div>`;
-  document.getElementById('main').innerHTML = `<div class="sheet">${postHTML(data.post)}
-    <div id="comments">${data.comments.filter((c) => !c.parent_id).map(threadHTML).join('')}</div>
+  const roots = data.comments.filter((c) => !c.parent_id);
+  main.innerHTML = `<div class="list">${postHTML(data.post)}</div>
+    <section class="card comments" id="comments">${roots.map(threadHTML).join('') || '<div class="nocom muted">Комментариев пока нет. Напишите первый</div>'}</section>
     <form class="cform" id="cform">
       <div class="chip" id="rchip" hidden><span></span><button type="button" class="icon" id="rcancel" aria-label="Отменить ответ">${I.x}</button></div>
-      <input name="text" maxlength="300" placeholder="Написать комментарий" aria-label="Комментарий" required><button class="btn" type="submit">Отправить</button></form></div>`;
+      <div class="crow"><input name="text" maxlength="300" placeholder="Написать комментарий…" aria-label="Комментарий" autocomplete="off" required>
+        <button class="send" type="submit" aria-label="Отправить">${I.send}</button></div></form>`;
   const f = document.getElementById('cform'), chip = document.getElementById('rchip');
   let replyTo = null;
   const setReply = (rootId, who) => {
@@ -404,84 +528,137 @@ async function postView(id) {
   document.getElementById('rcancel').onclick = () => { setReply(null); f.text.value = ''; };
   f.onsubmit = async (e) => {
     e.preventDefault();
+    const btn = f.querySelector('.send'); btn.disabled = true;
     try {
       const c = await api(`/posts/${id}/comments`, { method: 'POST', body: { text: f.text.value, parent_id: replyTo } });
-      const box = document.getElementById('comments');
+      const box = document.getElementById('comments'); box.querySelector('.nocom')?.remove();
       if (c.parent_id) box.querySelector(`.thread[data-root="${c.parent_id}"]`)?.insertAdjacentHTML('beforeend', cHTML(c, true));
       else box.insertAdjacentHTML('beforeend', threadHTML(c));
       f.reset(); setReply(null);
+      const cnt = main.querySelector('.post [href^="#/post/"].act span'); if (cnt) cnt.textContent = (+cnt.textContent || 0) + 1;
     } catch (err) { toast(err.message); }
+    btn.disabled = false;
   };
 }
 
 async function searchView(q) {
   const v = view;
-  shell(`<div class="sheet"><form class="search" id="sform"><input name="q" type="search" placeholder="Люди и слова, #теги" aria-label="Поиск" value="${esc(q)}"><button class="btn" type="submit">Найти</button></form></div><div id="results"></div>`, 'search');
-  document.getElementById('sform').onsubmit = (e) => { e.preventDefault(); location.hash = '#/search/' + encodeURIComponent(e.target.q.value.trim()); };
-  if (/^#[\p{L}\d_]+$/u.test(q)) return void location.replace('#/tag/' + encodeURIComponent(q.slice(1).toLowerCase()));
-  if (!q) return;
-  const box = document.getElementById('results');
-  try {
-    const r = await api('/search?q=' + encodeURIComponent(q));
-    if (v !== view) return;
-    if (!r.users.length && !r.posts.length) return void (box.innerHTML = `<div class="sheet empty" style="margin-top:14px"><b>Ничего не нашли</b>Попробуйте другое слово.</div>`);
-    box.innerHTML = `${r.users.length ? `<div class="sheet" style="margin-top:14px"><div class="sechead">Люди</div>${r.users.map((u) => `<div class="sug"><a href="#/u/${esc(u.username)}">${avatar(u, 'sm')}</a><a class="who" href="#/u/${esc(u.username)}"><b>${esc(u.name || u.username)}</b><span>@${esc(u.username)}</span></a></div>`).join('')}</div>` : ''}
-      ${r.posts.length ? `<div class="sheet" style="margin-top:14px"><div class="sechead">Посты</div>${r.posts.map(postHTML).join('')}</div>` : ''}`;
-  } catch (e) { toast(e.message); }
+  const main = page({ key: 'search', title: titleOf('Поиск') });
+  main.innerHTML = `<form class="card search" id="sform" role="search">${I.search}<input name="q" type="search" placeholder="Люди, слова, #теги" aria-label="Поиск" value="${esc(q)}" autocomplete="off" enterkeyhint="search"></form><div id="results"></div>`;
+  const box = document.getElementById('results'), input = document.querySelector('#sform input');
+  let seq = 0, timer;
+  const userRow = (u) => `<a class="sug" href="#/u/${esc(u.username)}">${avatar(u, 'sm')}<span class="who"><b>${esc(u.name || u.username)}</b><span>@${esc(u.username)}</span></span></a>`;
+  const home = async () => {
+    box.innerHTML = '<div class="list">' + skel(1) + '</div>';
+    try {
+      const [tr, sug] = await Promise.all([api('/trending'), api('/suggestions?limit=6')]);
+      if (v !== view || input.value.trim()) return;
+      box.innerHTML = `${tr.tags.length ? `<section class="card sidebox"><h2>Сейчас обсуждают</h2><div class="chips">${tr.tags.map((t) => `<a class="tagchip" href="#/tag/${encodeURIComponent(t.tag)}">#${esc(t.tag)}<small>${t.n}</small></a>`).join('')}</div></section>` : ''}
+        ${sug.length ? `<section class="card sidebox"><h2>Кого читать</h2>${sug.map(sugHTML).join('')}</section>` : ''}
+        <a class="card menu-link" href="#/popular">${I.flame}<span>Популярные посты</span></a>`;
+    } catch { box.innerHTML = ''; }
+  };
+  const run = async (text) => {
+    const my = ++seq;
+    if (/^#[\p{L}\d_]+$/u.test(text)) return void (location.hash = '#/tag/' + encodeURIComponent(text.slice(1).toLowerCase()));
+    if (!text) return home();
+    try {
+      const r = await api('/search?q=' + encodeURIComponent(text));
+      if (my !== seq || v !== view) return;
+      box.innerHTML = !r.users.length && !r.posts.length ? emptyBox('Ничего не нашли', 'Попробуйте другое слово.')
+        : `${r.users.length ? `<section class="card sidebox"><h2>Люди</h2>${r.users.map(userRow).join('')}</section>` : ''}
+           ${r.posts.length ? `<div class="list" style="margin-top:12px">${r.posts.map(postHTML).join('')}</div>` : ''}`;
+    } catch (e) { toast(e.message); }
+  };
+  document.getElementById('sform').onsubmit = (e) => { e.preventDefault(); clearTimeout(timer); history.replaceState(null, '', '#/search/' + encodeURIComponent(input.value.trim())); run(input.value.trim()); };
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { history.replaceState(null, '', '#/search/' + encodeURIComponent(input.value.trim())); run(input.value.trim()); }, 300); });
+  run(q.trim());
+  if (!q && matchMedia('(pointer: fine)').matches) input.focus();
 }
 
 // ---------- популярное, теги, закладки ----------
-const errBox = (e) => `<div class="sheet empty"><b>${esc(e.message)}</b><a class="btn" href="#/">В ленту</a></div>`;
-
 async function popularView(range) {
   const v = view; range = range === 'all' ? 'all' : 'week';
-  shell(`<div class="sheet empty">Загрузка…</div>`, 'popular');
+  const main = page({ key: 'popular', title: titleOf('Популярное') });
+  main.innerHTML = `${seg([['week', '#/popular', 'За неделю'], ['all', '#/popular/all', 'За всё время']], range)}<div class="list" id="feed">${skel(3)}</div>`;
   let posts, tags;
   try { [posts, tags] = await Promise.all([api(`/popular?range=${range}`), api('/trending').then((r) => r.tags)]); }
-  catch (e) { return void (v === view && (document.getElementById('main').innerHTML = errBox(e))); }
+  catch (e) { return void (v === view && (main.innerHTML = errBox(e))); }
   if (v !== view) return;
-  document.getElementById('main').innerHTML = `<div class="tabs"><a href="#/popular" class="${range === 'week' ? 'on' : ''}">За неделю</a><a href="#/popular/all" class="${range === 'all' ? 'on' : ''}">За всё время</a></div>
-    ${tags.length ? `<div class="sheet"><div class="sechead">Сейчас обсуждают</div><div class="chips">${tags.map((t) => `<a class="tagchip" href="#/tag/${encodeURIComponent(t.tag)}">#${esc(t.tag)}<small>${t.n}</small></a>`).join('')}</div></div>` : ''}
-    <div class="sheet" id="feed">${feedList(posts, `<div class="empty"><b>Пока нечего показать</b>Здесь появятся посты, которые лайкают, комментируют и репостят.</div>`)}</div>`;
+  main.innerHTML = `${seg([['week', '#/popular', 'За неделю'], ['all', '#/popular/all', 'За всё время']], range)}
+    ${tags.length ? `<section class="card sidebox"><h2>Сейчас обсуждают</h2><div class="chips">${tags.map((t) => `<a class="tagchip" href="#/tag/${encodeURIComponent(t.tag)}">#${esc(t.tag)}<small>${t.n}</small></a>`).join('')}</div></section>` : ''}
+    <div class="list" id="feed">${feedList(posts, emptyBox('Пока нечего показать', 'Здесь появятся посты, которые лайкают, комментируют и репостят.'))}</div>`;
   infinite(document.getElementById('feed'), posts, (n) => api(`/popular?range=${range}&offset=${n}`));
 }
 
 async function tagView(tag) {
   const v = view;
-  shell('<div class="sheet empty">Загрузка…</div>', 'search');
+  const main = page({ key: 'search', title: titleOf('#' + esc(tag)), back: true });
+  main.innerHTML = `<div class="list">${skel(2)}</div>`;
   let d;
-  try { d = await api('/tags/' + encodeURIComponent(tag)); } catch (e) { return void (v === view && (document.getElementById('main').innerHTML = errBox(e))); }
+  try { d = await api('/tags/' + encodeURIComponent(tag)); } catch (e) { return void (v === view && (main.innerHTML = errBox(e))); }
   if (v !== view) return;
-  document.title = `#${d.tag} — Kolo`;
-  document.getElementById('main').innerHTML = `<div class="sheet thead"><h1>#${esc(d.tag)}</h1><div class="muted">${d.total} ${pl(d.total, 'пост', 'поста', 'постов')}</div></div>
-    <div class="sheet" id="feed">${feedList(d.posts, `<div class="empty"><b>С этим тегом пока нет постов</b>Напишите первый: добавьте #${esc(d.tag)} в текст.</div>`)}</div>`;
+  document.title = baseTitle = `#${d.tag} — Kolo`;
+  main.innerHTML = `<div class="card thead"><h2>#${esc(d.tag)}</h2><div class="muted">${d.total} ${pl(d.total, 'пост', 'поста', 'постов')}</div></div>
+    <div class="list" id="feed">${feedList(d.posts, emptyBox('С этим тегом пока нет постов', `Напишите первый: добавьте #${esc(d.tag)} в текст.`))}</div>`;
   infinite(document.getElementById('feed'), d.posts, (n, last) => api(`/tags/${encodeURIComponent(d.tag)}?before=${lastCur(last)}`).then((r) => r.posts));
 }
 
 async function bookmarksView() {
   const v = view;
-  shell('<div class="sheet thead"><h1>Закладки</h1><div class="muted">Видите только вы</div></div><div class="sheet" id="feed"><div class="empty">Загрузка…</div></div>', 'bm');
+  const main = page({ key: 'bm', title: titleOf('Закладки'), back: true, backTo: '#/' });
+  main.innerHTML = `<div class="list" id="feed">${skel(2)}</div>`;
   const feed = document.getElementById('feed');
   const posts = await api('/bookmarks').catch((e) => (toast(e.message), []));
   if (v !== view) return;
-  feed.innerHTML = feedList(posts, '<div class="empty"><b>Закладок пока нет</b>Нажмите на флажок под постом, чтобы сохранить его на потом.</div>');
+  feed.innerHTML = feedList(posts, emptyBox('Закладок пока нет', 'Нажмите на флажок под постом, чтобы сохранить его на потом.'));
   infinite(feed, posts, (n, last) => api('/bookmarks?before=' + lastCur(last)));
 }
 
 // ---------- личные сообщения ----------
-const convHTML = (c) => `<a class="conv ${c.unread ? 'unread' : ''}" href="#/messages/${esc(c.username)}">${avatar(c, 'sm')}
-  <div class="who"><div class="top"><b>${esc(c.name || c.username)}</b><span class="muted">${ago(c.created_at)}</span></div>
-  <div class="snip muted">${c.mine ? 'Вы: ' : ''}${esc(c.text)}</div></div>${c.unread ? `<i class="badge static">${c.unread > 9 ? '9+' : c.unread}</i>` : ''}</a>`;
+const lastText = (c) => (c.image && !c.text ? '📷 Фото' : c.image ? '📷 ' + c.text : c.text);
+const convHTML = (c) => `<a class="conv ${c.unread ? 'unread' : ''}" href="#/messages/${esc(c.username)}" data-q="${esc((c.name + ' ' + c.username).toLowerCase())}">${avatar(c)}
+  <div class="who"><div class="top"><b>${esc(c.name || c.username)}</b><span class="muted">${convTime(c.created_at)}</span></div>
+  <div class="snip muted">${c.mine ? '<span class="you">Вы:</span> ' : ''}${esc(lastText(c))}</div></div>${c.unread ? `<i class="badge static">${c.unread > 9 ? '9+' : c.unread}</i>` : ''}</a>`;
+
+function newChatDialog() {
+  const d = document.createElement('dialog'); d.className = 'sheetdlg';
+  d.innerHTML = `<h2>Новое сообщение</h2><form class="search inner" id="ncs">${I.search}<input name="q" type="search" placeholder="Найти человека" aria-label="Найти человека" autocomplete="off"></form><div class="people" id="ncp"><div class="empty">Загрузка…</div></div>
+    <div class="actions"><button type="button" class="btn line" id="ncx">Закрыть</button></div>`;
+  document.body.appendChild(d); d.showModal();
+  d.querySelector('#ncx').onclick = () => d.close();
+  d.addEventListener('close', () => d.remove());
+  const box = d.querySelector('#ncp'), input = d.querySelector('input');
+  const show = (list) => { box.innerHTML = list.length ? list.filter((u) => u.username !== me.username).map((u) => `<a class="sug" href="#/messages/${esc(u.username)}">${avatar(u, 'sm')}<span class="who"><b>${esc(u.name || u.username)}</b><span>@${esc(u.username)}</span></span></a>`).join('') : '<div class="empty">Никого не нашли</div>'; };
+  box.addEventListener('click', (e) => e.target.closest('a') && d.close());
+  const load = async (q) => { try { show(q ? (await api('/search?q=' + encodeURIComponent(q))).users : await api('/suggestions?limit=8')); } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; } };
+  let t; input.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => load(input.value.trim()), 250); });
+  d.querySelector('#ncs').onsubmit = (e) => e.preventDefault();
+  load('');
+}
 
 async function messagesView() {
   const v = view;
-  shell('<div class="sheet thead"><h1>Сообщения</h1></div><div class="sheet" id="convs"><div class="empty">Загрузка…</div></div>', 'msgs');
+  const main = page({ key: 'msgs', title: titleOf('Сообщения'), right: `<button class="icon" id="newchat" aria-label="Новое сообщение">${I.compose}</button>` });
+  main.innerHTML = `<form class="card search" id="cfilter" role="search">${I.search}<input type="search" placeholder="Поиск по диалогам" aria-label="Поиск по диалогам" autocomplete="off"></form>
+    <section class="card convs" id="convs">${'<div class="conv skel"><span class="av"></span><div class="who"><i class="l1"></i><i class="l2"></i></div></div>'.repeat(4)}</section>`;
+  document.getElementById('newchat').onclick = newChatDialog;
+  const filter = document.querySelector('#cfilter input');
+  document.getElementById('cfilter').onsubmit = (e) => e.preventDefault();
+  const apply = () => {
+    const q = filter.value.trim().toLowerCase(); let shown = 0;
+    document.querySelectorAll('#convs .conv').forEach((el) => { const ok = !q || (el.dataset.q || '').includes(q); el.hidden = !ok; shown += ok; });
+    document.getElementById('nomatch')?.remove();
+    if (q && !shown) document.getElementById('convs').insertAdjacentHTML('beforeend', '<div class="empty" id="nomatch">Ничего не нашли</div>');
+  };
+  filter.addEventListener('input', apply);
   const load = async () => {
     const box = document.getElementById('convs'); if (!box) return;
     try {
       const list = await api('/conversations');
       if (v !== view) return;
-      box.innerHTML = list.length ? list.map(convHTML).join('') : '<div class="empty"><b>Сообщений пока нет</b>Откройте чей-нибудь профиль и нажмите «Написать».</div>';
+      box.innerHTML = list.length ? list.map(convHTML).join('') : '<div class="empty"><b>Сообщений пока нет</b>Нажмите на значок сверху и выберите, кому написать.</div>';
+      apply();
     } catch (e) { toast(e.message); }
   };
   await load();
@@ -489,39 +666,58 @@ async function messagesView() {
   msgHook = () => { load(); return false; }; // список обновляется, а счётчик и тост — как обычно
 }
 
+let chatCleanup = null;
 async function threadView(username) {
   const v = view;
-  shell('<div class="sheet empty">Загрузка…</div>', 'msgs');
+  const main = page({ key: 'msgs', mode: 'chat', back: true, backTo: '#/messages', title: '<div class="chat-who"><span class="av sm"></span></div>' });
+  main.innerHTML = '<div class="chat"><div class="msgs" id="msgs"><div class="empty">Загрузка…</div></div></div>';
   let data;
   try { data = await api('/messages/' + encodeURIComponent(username)); }
-  catch (e) { return void (v === view && (document.getElementById('main').innerHTML = `<div class="sheet empty"><b>${esc(e.message)}</b><a class="btn" href="#/messages">К сообщениям</a></div>`)); }
+  catch (e) { return void (v === view && (main.innerHTML = `<div class="card empty"><b>${esc(e.message)}</b><a class="btn" href="#/messages">К сообщениям</a></div>`)); }
   if (v !== view) return;
-  const peer = data.user; let list = data.messages, more = data.more, busy = false, olderIo = null;
-  document.title = `${peer.name || peer.username} — Kolo`;
+  const peer = data.user; let list = data.messages, more = data.more, busy = false, olderIo = null, lastDay = '', stick = true;
+  document.title = baseTitle = `${peer.name || peer.username} — Kolo`;
+  document.querySelector('#head .ht').innerHTML = `<a class="chat-who" href="#/u/${esc(peer.username)}">${avatar(peer, 'sm')}<div class="cwt"><b>${esc(peer.name || peer.username)}</b><small class="muted">@${esc(peer.username)}</small></div></a>`;
   api('/me').then((m) => { unreadMsgs = m.unread_messages || 0; paintBadge(); }).catch(() => {}); // диалог открыт — входящие прочитаны
-  document.getElementById('main').innerHTML = `<div class="sheet chat">
-    <header class="chead"><a class="icon" href="#/messages" aria-label="Назад к сообщениям">${I.back}</a>
-      <a class="chat-who" href="#/u/${esc(peer.username)}">${avatar(peer, 'sm')}<div class="cwt"><b>${esc(peer.name || peer.username)}</b><small class="muted">@${esc(peer.username)}</small></div></a></header>
+
+  main.innerHTML = `<div class="chat" id="chat">
     <div class="msgs" id="msgs" aria-live="polite"></div>
-    <form class="mform" id="mform"><textarea name="text" rows="1" maxlength="2000" placeholder="Сообщение…" aria-label="Сообщение"></textarea><button class="btn" type="submit">Отправить</button></form></div>`;
-  const box = document.getElementById('msgs'), f = document.getElementById('mform'), ta = f.text;
+    <form class="mform" id="mform">
+      <div class="mpreview" id="mprev" hidden><img alt="Выбранное фото"><button type="button" class="icon" id="mrm" aria-label="Убрать фото">${I.x}</button></div>
+      <div class="mrow">
+        <label class="icon attach" aria-label="Прикрепить фото" title="Прикрепить фото">${I.clip}<input type="file" accept="image/*" id="mfile" hidden></label>
+        <textarea name="text" rows="1" maxlength="2000" placeholder="Сообщение…" aria-label="Сообщение" enterkeyhint="send"></textarea>
+        <button class="send" type="submit" aria-label="Отправить" disabled>${I.send}</button>
+      </div></form></div>`;
+  const box = document.getElementById('msgs'), f = document.getElementById('mform'), ta = f.text, sendBtn = f.querySelector('.send'), prev = document.getElementById('mprev'), fileIn = document.getElementById('mfile');
+
+  const tick = (m) => m.mine ? `<i class="tick ${m.is_read ? 'read' : ''}" aria-label="${m.is_read ? 'Прочитано' : 'Отправлено'}">${m.is_read ? I.checks : I.check}</i>` : '';
+  const msgHTML = (m, st = '') => `<div class="msg ${m.mine ? 'mine' : ''} ${st}" data-id="${m.id || ''}">
+    ${m.image ? `<img class="mimg" data-zoom src="${esc(m.image)}" alt="Фото" decoding="async">` : ''}${m.text ? `<p>${linkify(m.text)}</p>` : ''}
+    <span class="mmeta">${timeOf(m.created_at)}${tick(m)}</span></div>`;
+  const dayHTML = (m) => { const d = dayOf(m.created_at); if (d === lastDay) return ''; lastDay = d; return `<div class="day">${d}</div>`; };
+  const nearBottom = () => box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+  const toBottom = () => { box.scrollTop = box.scrollHeight; };
+  box.addEventListener('scroll', () => { stick = nearBottom(); }, { passive: true });
+  box.addEventListener('load', (e) => { if (stick && e.target.classList?.contains('mimg')) toBottom(); }, true); // картинка догрузилась и сдвинула ленту
 
   const render = (mode) => {
-    const prevH = box.scrollHeight, prevTop = box.scrollTop;
-    let day = '', out = more ? '<div class="older" id="older">Загрузка…</div>' : '';
-    for (const m of list) {
-      const d = dayOf(m.created_at);
-      if (d !== day) { day = d; out += `<div class="day">${d}</div>`; }
-      out += `<div class="msg ${m.mine ? 'mine' : ''}"><p>${linkify(m.text)}</p><span>${timeOf(m.created_at)}${m.mine && m.is_read ? ' · прочитано' : ''}</span></div>`;
-    }
-    box.innerHTML = out || '<div class="empty"><b>Начните разговор</b>Напишите первое сообщение.</div>';
-    box.scrollTop = mode === 'bottom' ? box.scrollHeight : prevTop + (box.scrollHeight - prevH);
+    const prevH = box.scrollHeight, prevTop = box.scrollTop; lastDay = '';
+    let out = more ? '<div class="older" id="older">Загрузка…</div>' : '';
+    for (const m of list) out += dayHTML(m) + msgHTML(m);
+    box.innerHTML = out || '<div class="empty"><b>Начните разговор</b>Напишите первое сообщение или отправьте фото.</div>';
+    if (mode === 'bottom') toBottom(); else box.scrollTop = prevTop + (box.scrollHeight - prevH);
+    olderIo?.disconnect(); olderIo = null;
     const older = document.getElementById('older');
-    olderIo?.disconnect();
     if (older) { olderIo = new IntersectionObserver((en) => { if (en[0].isIntersecting) loadOlder(); }, { root: box }); olderIo.observe(older); }
   };
+  const append = (m, st = '') => { // новое сообщение добавляем в конец, не перерисовывая весь диалог
+    box.querySelector('.empty')?.remove();
+    box.insertAdjacentHTML('beforeend', dayHTML(m) + msgHTML(m, st));
+    return box.lastElementChild;
+  };
   const loadOlder = async () => {
-    if (busy || !more) return; busy = true;
+    if (busy || !more || !list.length) return; busy = true;
     try {
       const d = await api(`/messages/${encodeURIComponent(username)}?before=${list[0].id}`);
       list = d.messages.concat(list); more = d.more; render('keep');
@@ -530,95 +726,246 @@ async function threadView(username) {
   };
   render('bottom');
 
-  const nearBottom = () => box.scrollHeight - box.scrollTop - box.clientHeight < 90;
   msgHook = (m) => {
     if (m.username.toLowerCase() !== peer.username.toLowerCase()) return false;
-    if (list.some((x) => x.id === m.id)) return true; // уже есть (пришло и по потоку, и по опросу)
-    const stick = nearBottom();
-    list.push({ id: m.id, text: m.text, created_at: m.created_at, mine: false, is_read: 1 });
-    render(stick ? 'bottom' : 'keep');
+    if (box.querySelector(`[data-id="${m.id}"]`)) return true; // уже есть (пришло и по потоку, и по опросу)
+    const was = nearBottom();
+    const msg = { id: m.id, text: m.text, image: m.image, created_at: m.created_at, mine: false, is_read: 1 };
+    list.push(msg); append(msg); if (was) toBottom();
     api(`/messages/${encodeURIComponent(peer.username)}/read`, { method: 'POST' }).catch(() => {});
     return true;
   };
-  readHook = (uname) => {
-    if (uname.toLowerCase() !== peer.username.toLowerCase()) return;
-    list.forEach((m) => { if (m.mine) m.is_read = 1; }); render('keep');
-  };
-
+  const markRead = () => box.querySelectorAll('.msg.mine .tick:not(.read)').forEach((t) => { t.classList.add('read'); t.innerHTML = I.checks; });
+  readHook = (uname) => { if (uname.toLowerCase() === peer.username.toLowerCase()) markRead(); };
   pollHook = async () => { // запасной режим: подтягиваем новое и «прочитано» без потока событий
     const d = await api('/messages/' + encodeURIComponent(peer.username));
-    let changed = false;
+    const was = nearBottom(); let added = false;
     for (const m of d.messages) {
-      const have = list.find((x) => x.id === m.id);
-      if (!have) { list.push(m); changed = true; }
-      else if (m.mine && m.is_read && !have.is_read) { have.is_read = 1; changed = true; }
+      if (box.querySelector(`[data-id="${m.id}"]`)) continue;
+      if (list.some((x) => x.id === m.id)) continue;
+      list.push(m); append(m); added = true;
     }
-    if (changed) { list.sort((a, b) => a.id - b.id); render(nearBottom() ? 'bottom' : 'keep'); }
+    if (d.messages.some((m) => m.mine && m.is_read)) markRead();
+    if (added && was) toBottom();
   };
-  const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; };
-  ta.addEventListener('input', grow);
-  // Enter отправляет на компьютере; на телефоне Enter — перенос строки
+
+  // ---- ввод: текст + фото ----
+  let file = null;
+  const updateSend = () => { sendBtn.disabled = !ta.value.trim() && !file; };
+  const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 130) + 'px'; };
+  const setFile = (x) => {
+    file = x; prev.hidden = !x;
+    if (x) prev.querySelector('img').src = URL.createObjectURL(x); else fileIn.value = '';
+    updateSend();
+  };
+  const take = async (raw) => { const x = await pickedImage(raw); if (x) { setFile(x); ta.focus(); } else fileIn.value = ''; };
+  fileIn.onchange = () => take(fileIn.files[0]);
+  document.getElementById('mrm').onclick = () => setFile(null);
+  ta.addEventListener('input', () => { grow(); updateSend(); });
+  ta.addEventListener('paste', (e) => { const it = [...(e.clipboardData?.files || [])].find((x) => x.type.startsWith('image/')); if (it) { e.preventDefault(); take(it); } });
+  const chat = document.getElementById('chat');
+  chat.addEventListener('dragover', (e) => e.preventDefault());
+  chat.addEventListener('drop', (e) => { const it = [...(e.dataTransfer?.files || [])].find((x) => x.type.startsWith('image/')); if (it) { e.preventDefault(); take(it); } });
+  // Enter отправляет на компьютере; на телефоне Enter — перенос строки, отправка по кнопке
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && matchMedia('(pointer: fine)').matches) { e.preventDefault(); f.requestSubmit(); } });
-  f.onsubmit = async (e) => {
+
+  f.onsubmit = (e) => {
     e.preventDefault();
-    const text = ta.value.trim(); if (!text) return;
-    const btn = f.querySelector('.btn'); btn.disabled = true;
-    try {
-      const m = await api('/messages/' + encodeURIComponent(peer.username), { method: 'POST', body: { text } });
-      list.push(m); ta.value = ''; grow(); render('bottom');
-    } catch (err) { toast(err.message); }
-    btn.disabled = false; ta.focus();
+    const text = ta.value.trim(), img = file;
+    if (!text && !img) return;
+    const tmp = { id: 0, text, image: img ? URL.createObjectURL(img) : null, created_at: new Date().toISOString(), mine: true, is_read: 0 };
+    ta.value = ''; grow(); setFile(null); ta.focus();
+    const el = append(tmp, 'sending'); toBottom(); stick = true;
+    const go = async () => { // сообщение появляется сразу, а уходит в фоне; при ошибке его можно нажать и отправить снова
+      el.classList.remove('failed'); el.classList.add('sending');
+      const fd = new FormData(); fd.append('text', text); if (img) fd.append('image', img);
+      try {
+        const m = await api('/messages/' + encodeURIComponent(peer.username), { method: 'POST', body: fd });
+        list.push(m); el.dataset.id = m.id; el.classList.remove('sending');
+      } catch (err) { el.classList.remove('sending'); el.classList.add('failed'); toast(err.message); }
+    };
+    el.addEventListener('click', () => el.classList.contains('failed') && go());
+    go();
   };
   if (matchMedia('(pointer: fine)').matches) ta.focus();
+
+  // клавиатура на телефоне: подгоняем высоту чата под видимую область, чтобы поле ввода не пряталось
+  const vv = window.visualViewport;
+  const fit = () => {
+    const root = document.documentElement.style;
+    root.setProperty('--vh', (vv ? vv.height : innerHeight) + 'px'); root.setProperty('--vt', (vv ? vv.offsetTop : 0) + 'px');
+    if (stick) toBottom();
+  };
+  if (vv) { vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit); }
+  fit();
+  chatCleanup = () => {
+    if (vv) { vv.removeEventListener('resize', fit); vv.removeEventListener('scroll', fit); }
+    document.documentElement.style.removeProperty('--vh'); document.documentElement.style.removeProperty('--vt');
+    olderIo?.disconnect();
+  };
+}
+
+// ---------- уведомления ----------
+const NOTE = { like: 'ставит лайк вашему посту', comment: 'комментирует ваш пост', reply: 'отвечает на ваш комментарий', follow: 'читает вас', mention: 'упоминает вас', repost: 'делает репост вашего поста' };
+const NICON = { like: ['heart', 'like'], repost: ['repost', 'rep'], comment: ['comment', 'com'], reply: ['comment', 'com'], mention: ['at', 'men'], follow: ['userPlus', 'fol'] };
+const NFILTER = { mentions: ['mention', 'reply', 'comment'], likes: ['like', 'repost'], follows: ['follow'] };
+const NTABS = [['all', '#/notifications', 'Все'], ['mentions', '#/notifications/mentions', 'Ответы'], ['likes', '#/notifications/likes', 'Лайки'], ['follows', '#/notifications/follows', 'Подписки']];
+function noteHTML(n) {
+  const [icon, cls] = NICON[n.type] || ['bell', 'men'];
+  const snip = n.text || n.post_text;
+  return `<a class="note ${n.is_read ? '' : 'new'}" href="${n.type === 'follow' ? '#/u/' + esc(n.username) : '#/post/' + n.post_id}">
+    <span class="nav-av">${avatar(n, '')}<i class="ntype ${cls}">${I[icon]}</i></span>
+    <div class="nb"><div class="nt"><b>${esc(n.name || n.username)}</b> ${NOTE[n.type] || ''}</div>${snip ? `<p class="snip muted">${esc(snip)}</p>` : ''}<span class="muted ntime">${ago(n.created_at)}</span></div>
+    ${n.post_image ? `<img class="nthumb" src="${esc(n.post_image)}" alt="" loading="lazy" decoding="async">` : ''}${n.is_read ? '' : '<i class="dot" aria-label="Новое"></i>'}</a>`;
+}
+
+// push: подписка браузера. Работает на https (и localhost); на iPhone — только у сайта, добавленного на экран «Домой»
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+const b64uToBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+async function swReg() { if (!('serviceWorker' in navigator) || !isSecureContext) return null; return Promise.race([navigator.serviceWorker.ready, new Promise((r) => setTimeout(() => r(null), 3000))]); }
+async function pushState() {
+  const reg = await swReg();
+  if (!reg || !('PushManager' in window) || !('Notification' in window)) return isIOS && !standalone ? 'ios' : 'none';
+  if (Notification.permission === 'denied') return 'denied';
+  return Notification.permission === 'granted' && (await reg.pushManager.getSubscription()) ? 'on' : 'off';
+}
+async function enablePush() {
+  const reg = await swReg(); if (!reg) throw new Error('Уведомления недоступны в этом браузере');
+  if ((await Notification.requestPermission()) !== 'granted') throw new Error('Разрешите уведомления в настройках браузера');
+  const { key } = await api('/push/key'), want = b64uToBytes(key);
+  let sub = await reg.pushManager.getSubscription();
+  if (sub && sub.options?.applicationServerKey && new Uint8Array(sub.options.applicationServerKey).join() !== want.join()) { await sub.unsubscribe(); sub = null; }
+  sub = sub || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: want });
+  await api('/push/subscribe', { method: 'POST', body: sub.toJSON() });
+}
+async function disablePush() {
+  const reg = await swReg(), sub = reg && await reg.pushManager.getSubscription();
+  if (sub) { await api('/push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } }).catch(() => {}); await sub.unsubscribe(); }
+}
+let pushSynced = false;
+async function syncPush() { // при входе привязываем подписку устройства к текущему аккаунту
+  if (pushSynced) return; pushSynced = true;
+  try { if ((await pushState()) === 'on') { const sub = await (await swReg()).pushManager.getSubscription(); await api('/push/subscribe', { method: 'POST', body: sub.toJSON() }); } } catch {}
+}
+async function renderPushCard() {
+  const box = document.getElementById('pushcard'); if (!box) return;
+  const st = await pushState(); if (!document.getElementById('pushcard')) return;
+  const card = (html) => (box.innerHTML = `<div class="card pushcard">${html}</div>`);
+  if (st === 'off') {
+    card(`<span class="pi">${I.bell}</span><div><b>Включить уведомления</b><p class="muted">Сообщения, ответы и лайки — даже когда Kolo закрыт.</p></div><button class="btn sm" id="pushon">Включить</button>`);
+    document.getElementById('pushon').onclick = async (e) => { e.target.disabled = true; try { await enablePush(); toast('Уведомления включены'); } catch (err) { toast(err.message); } renderPushCard(); };
+  } else if (st === 'on') {
+    card(`<span class="pi ok">${I.check}</span><div><b>Уведомления включены</b><p class="muted">На этом устройстве.</p></div><button class="btn sm line" id="pushoff">Выключить</button>`);
+    document.getElementById('pushoff').onclick = async () => { await disablePush(); renderPushCard(); };
+  } else if (st === 'denied') card(`<span class="pi">${I.alert}</span><div><b>Уведомления заблокированы</b><p class="muted">Разрешите их для этого сайта в настройках браузера.</p></div>`);
+  else if (st === 'ios') card(`<span class="pi">${I.bell}</span><div><b>Уведомления на iPhone</b><p class="muted">Нажмите «Поделиться» → «На экран Домой», затем откройте Kolo с экрана и включите уведомления здесь.</p></div>`);
+  else box.innerHTML = '';
+}
+
+async function notificationsView(tab) {
+  tab = NFILTER[tab] ? tab : 'all';
+  const v = view;
+  const main = page({ key: 'notes', title: titleOf('Уведомления') });
+  main.innerHTML = `<div id="pushcard"></div>${seg(NTABS, tab)}<section class="card nlist" id="notes">${'<div class="note skel"><span class="av sm"></span><div class="nb"><i class="l1"></i><i class="l2"></i></div></div>'.repeat(4)}</section>`;
+  renderPushCard();
+  const box = document.getElementById('notes');
+  const empty = '<div class="empty"><b>Пока ничего нового</b>Лайки, ответы и подписки появятся здесь.</div>';
+  const url = (before) => `/notifications?type=${tab}${before ? '&before=' + before : ''}`;
+  let r;
+  try { r = await api(url()); } catch (e) { return void (v === view && (box.innerHTML = `<div class="empty">${esc(e.message)}</div>`)); }
+  if (v !== view) return;
+  box.innerHTML = r.items.length ? r.items.map(noteHTML).join('') : empty;
+  const addMore = (res, items) => {
+    box.querySelector('.sentinel')?.remove(); io?.disconnect(); io = null;
+    if (!res.more) return;
+    const s = document.createElement('div'); s.className = 'sentinel'; s.textContent = 'Загрузка…'; box.appendChild(s);
+    let busy = false, last = items[items.length - 1].id;
+    const load = async () => {
+      if (busy) return; busy = true;
+      try { const nx = await api(url(last)); s.insertAdjacentHTML('beforebegin', nx.items.map(noteHTML).join('')); last = nx.items.length ? nx.items[nx.items.length - 1].id : last; if (!nx.more) { ob.disconnect(); s.remove(); } else { ob.unobserve(s); ob.observe(s); } }
+      catch { s.innerHTML = '<button class="btn line">Повторить</button>'; s.firstChild.onclick = load; }
+      busy = false;
+    };
+    const ob = new IntersectionObserver((en) => { if (en[0].isIntersecting) load(); }, { rootMargin: '500px' }); ob.observe(s); io = ob;
+  };
+  if (r.items.length) addMore(r, r.items);
+  noteHook = (n) => { // пришло новое уведомление, пока экран открыт
+    if (NFILTER[tab] && !NFILTER[tab].includes(n.type)) return false;
+    box.querySelector('.empty')?.remove();
+    box.insertAdjacentHTML('afterbegin', noteHTML(n));
+    api('/notifications/read', { method: 'POST' }).catch(() => {});
+    return true;
+  };
+  if (unread) { try { await api('/notifications/read', { method: 'POST' }); unread = 0; paintBadge(); } catch {} }
 }
 
 // ---------- действия (делегирование) ----------
+function zoom(src) {
+  const d = document.createElement('div'); d.className = 'lb';
+  d.innerHTML = `<img src="${esc(src)}" alt=""><button class="icon" aria-label="Закрыть">${I.x}</button>`;
+  const close = () => { d.remove(); removeEventListener('keydown', key); };
+  const key = (e) => e.key === 'Escape' && close();
+  d.onclick = close; addEventListener('keydown', key); document.body.appendChild(d);
+}
 document.addEventListener('click', async (e) => {
+  const z = e.target.closest('img[data-zoom]');
+  if (z) return zoom(z.src);
+  const navA = e.target.closest('.nav a[href], .mlogo');
+  if (navA) { // повторное нажатие на текущий раздел: наверх и обновить
+    const h = navA.getAttribute('href');
+    if (h === (location.hash || '#/')) { e.preventDefault(); delete feedCache.all; delete feedCache.following; route(); }
+    return;
+  }
   const repB = e.target.closest('[data-repost]'), bmB = e.target.closest('[data-bm]'), likeB = e.target.closest('[data-like]'), delB = e.target.closest('[data-del]'), folB = e.target.closest('[data-follow]');
+  const busy = (b) => b.dataset.busy === '1';
   try {
-    if (likeB) {
-      likeB.disabled = true;
-      const r = await api(`/posts/${likeB.dataset.like}/like`, { method: 'POST' });
-      likeB.classList.toggle('on', r.liked); likeB.setAttribute('aria-pressed', r.liked); likeB.querySelector('span').textContent = r.likes || '';
-      likeB.disabled = false;
+    if (likeB) { // лайк, репост и закладка меняются на экране сразу, а на сервер уходят в фоне; при ошибке откатываются
+      if (busy(likeB)) return; likeB.dataset.busy = '1';
+      const span = likeB.querySelector('span'), n = +span.textContent || 0, on = !likeB.classList.contains('on');
+      const set = (o, c) => { likeB.classList.toggle('on', o); likeB.setAttribute('aria-pressed', o); span.textContent = c > 0 ? c : ''; };
+      set(on, n + (on ? 1 : -1));
+      try { const r = await api(`/posts/${likeB.dataset.like}/like`, { method: 'POST' }); set(r.liked, r.likes); } catch (err) { set(!on, n); throw err; } finally { likeB.dataset.busy = ''; }
     } else if (repB) {
-      repB.disabled = true;
-      const r = await api(`/posts/${repB.dataset.repost}/repost`, { method: 'POST' });
-      repB.classList.toggle('on', r.reposted); repB.setAttribute('aria-pressed', r.reposted); repB.querySelector('span').textContent = r.reposts || '';
-      repB.disabled = false; toast(r.reposted ? 'Репост опубликован' : 'Репост отменён');
+      if (busy(repB)) return; repB.dataset.busy = '1';
+      const span = repB.querySelector('span'), n = +span.textContent || 0, on = !repB.classList.contains('on');
+      const set = (o, c) => { repB.classList.toggle('on', o); repB.setAttribute('aria-pressed', o); span.textContent = c > 0 ? c : ''; };
+      set(on, n + (on ? 1 : -1));
+      try { const r = await api(`/posts/${repB.dataset.repost}/repost`, { method: 'POST' }); set(r.reposted, r.reposts); delete feedCache.all; delete feedCache.following; toast(r.reposted ? 'Репост опубликован' : 'Репост отменён'); } catch (err) { set(!on, n); throw err; } finally { repB.dataset.busy = ''; }
     } else if (bmB) {
-      bmB.disabled = true;
-      const r = await api(`/posts/${bmB.dataset.bm}/bookmark`, { method: 'POST' });
-      bmB.classList.toggle('on', r.bookmarked); bmB.setAttribute('aria-pressed', r.bookmarked);
-      bmB.disabled = false; toast(r.bookmarked ? 'Сохранено в закладки' : 'Убрано из закладок');
+      if (busy(bmB)) return; bmB.dataset.busy = '1';
+      const on = !bmB.classList.contains('on'), set = (o) => { bmB.classList.toggle('on', o); bmB.setAttribute('aria-pressed', o); };
+      set(on);
+      try { const r = await api(`/posts/${bmB.dataset.bm}/bookmark`, { method: 'POST' }); set(r.bookmarked); toast(r.bookmarked ? 'Сохранено в закладки' : 'Убрано из закладок'); } catch (err) { set(!on); throw err; } finally { bmB.dataset.busy = ''; }
     } else if (delB) {
       if (!confirm('Удалить этот пост?')) return;
       await api('/posts/' + delB.dataset.del, { method: 'DELETE' });
-      const post = delB.closest('.post'); post.remove(); toast('Пост удалён');
+      delete feedCache.all; delete feedCache.following;
+      delB.closest('.post').remove(); toast('Пост удалён');
       if (location.hash.startsWith('#/post/')) location.hash = '#/';
     } else if (folB) {
       folB.disabled = true;
       const r = await api(`/users/${encodeURIComponent(folB.dataset.follow)}/follow`, { method: 'POST' });
+      delete feedCache.following; sideData = null;
       if (folB.id === 'fbtn') {
         folB.textContent = r.isFollowing ? 'Вы читаете' : 'Читать'; folB.classList.toggle('line', r.isFollowing);
         document.getElementById('fcount').textContent = r.followers;
       } else { folB.textContent = r.isFollowing ? 'Вы читаете' : 'Читать'; folB.classList.toggle('line', !r.isFollowing); }
       folB.disabled = false;
     }
-  } catch (err) { toast(err.message); [likeB, repB, bmB, folB].forEach((b) => b && (b.disabled = false)); }
+  } catch (err) { toast(err.message); [folB].forEach((b) => b && (b.disabled = false)); }
 });
 
 // ---------- realtime и уведомления ----------
-const NOTE = { like: 'ставит лайк вашему посту', comment: 'комментирует ваш пост', reply: 'отвечает на ваш комментарий', follow: 'читает вас', mention: 'упоминает вас', repost: 'делает репост вашего поста' };
+let baseTitle = 'Kolo';
 function paintBadge() {
-  for (const [id, n] of [['badge', unread], ['mbadge', unreadMsgs]]) {
+  for (const [id, n] of [['badge', unread], ['hbadge', unread], ['mbadge', unreadMsgs]]) {
     const b = document.getElementById(id);
     if (b) { b.hidden = !n; b.textContent = n > 9 ? '9+' : n; }
   }
+  const total = unread + unreadMsgs;
+  document.title = (total ? `(${total > 99 ? '99+' : total}) ` : '') + baseTitle;
 }
-const noteHTML = (n) => `<a class="note ${n.is_read ? '' : 'new'}" href="${n.type === 'follow' ? '#/u/' + esc(n.username) : '#/post/' + n.post_id}">${avatar(n, 'sm')}
-  <div><b>${esc(n.name || n.username)}</b> ${NOTE[n.type] || ''}${n.text ? `<p class="muted snip">${esc(n.text)}</p>` : ''}<span class="muted">${ago(n.created_at)}</span></div></a>`;
-
 function stopStream(retry) {
   if (stream) { stream.close(); stream = null; }
   clearTimeout(streamTimer); streamTimer = null;
@@ -626,15 +973,13 @@ function stopStream(retry) {
 }
 function onNotification(n) {
   pollNote = Math.max(pollNote, n.id || 0);
-  toast(`${n.name || n.username} ${NOTE[n.type] || ''}`);
-  const box = document.getElementById('notes');
-  if (box) { box.querySelector('.empty')?.remove(); box.insertAdjacentHTML('afterbegin', noteHTML(n)); api('/notifications/read', { method: 'POST' }).catch(() => {}); }
-  else { unread++; paintBadge(); }
+  if (noteHook && noteHook(n)) return; // экран уведомлений открыт — запись уже добавлена
+  unread++; paintBadge(); toast(`${n.name || n.username} ${NOTE[n.type] || ''}`);
 }
 function onMessage(m) {
   pollMsg = Math.max(pollMsg, m.id || 0);
   if (msgHook && msgHook(m)) return; // диалог с этим человеком открыт — сообщение уже на экране
-  unreadMsgs++; paintBadge(); toast(`${m.name || m.username}: ${m.text.slice(0, 50)}`);
+  unreadMsgs++; paintBadge(); toast(`${m.name || m.username}: ${(m.text || '📷 Фото').slice(0, 50)}`);
 }
 
 // Запасной режим: если пульс от потока событий не приходит (прокси режет или копит SSE), раз в 5 секунд спрашиваем сервер сами.
@@ -681,35 +1026,25 @@ async function connectStream() {
   stream.onerror = () => stopStream(true); // билет одноразовый, поэтому переподключаемся с новым
 }
 
-async function notificationsView() {
-  const v = view;
-  shell('<div class="sheet" id="notes"><div class="empty">Загрузка…</div></div>', 'notes');
-  try {
-    const r = await api('/notifications');
-    if (v !== view) return;
-    document.getElementById('notes').innerHTML = r.items.length ? r.items.map(noteHTML).join('')
-      : '<div class="empty"><b>Пока ничего нового</b>Лайки, ответы и подписки появятся здесь.</div>';
-    if (unread) { await api('/notifications/read', { method: 'POST' }); unread = 0; paintBadge(); }
-  } catch (e) { toast(e.message); }
-}
-
 // ---------- роутер ----------
 async function route() {
-  document.title = 'Kolo'; view++;
-  io?.disconnect(); io = null; msgHook = null; readHook = null; pollHook = null;
+  document.title = baseTitle = 'Kolo'; view++;
+  io?.disconnect(); io = null; msgHook = null; readHook = null; pollHook = null; noteHook = null;
+  chatCleanup?.(); chatCleanup = null;
   const [, a, b] = (location.hash.slice(1) || '/').split('/');
-  if (!localStorage.getItem('kolo_token')) return a === 'register' ? registerView() : authView();
+  if (!localStorage.getItem('kolo_token')) { document.body.dataset.mode = ''; return a === 'register' ? registerView() : authView(); }
   if (!me) { try { await loadMe(); } catch { return authView(); } }
   if (a === 'login' || a === 'register') return void (location.hash = me.onboarded ? '#/' : '#/welcome/2');
   if (!me.onboarded && a !== 'welcome') return void (location.hash = '#/welcome/2');
-  if (a === 'welcome') return me.onboarded ? void (location.hash = '#/') : welcomeView(+b === 3 ? 3 : 2);
+  if (a === 'welcome') { document.body.dataset.mode = ''; return me.onboarded ? void (location.hash = '#/') : welcomeView(+b === 3 ? 3 : 2); }
   window.scrollTo(0, 0);
   feedScope = null;
-  connectStream();
-  if (a === 'notifications') return notificationsView();
+  connectStream(); syncPush();
+  if (a === 'notifications') return notificationsView(b);
   if (a === 'messages') return b ? threadView(decodeURIComponent(b)) : messagesView();
   if (a === 'bookmarks') return bookmarksView();
   if (a === 'popular') return popularView(b);
+  if (a === 'new') return newPostView();
   if (a === 'tag' && b) return tagView(decodeURIComponent(b));
   if (a === 'u' && b) return profileView(decodeURIComponent(b));
   if (a === 'post' && b) return postView(+b);
@@ -717,4 +1052,8 @@ async function route() {
   return feedView(a === 'following' ? 'following' : 'all');
 }
 window.addEventListener('hashchange', route);
+if ('serviceWorker' in navigator && isSecureContext) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+  navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.goto) location.hash = e.data.goto; }); // нажали на push — открываем нужный экран
+}
 route();

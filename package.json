@@ -1,6 +1,6 @@
 {
   "name": "kolo",
-  "version": "2.1.0",
+  "version": "2.4.0",
   "description": "Kolo — социальная сеть: Node.js + Express + SQLite/Postgres, SSE, чистый JS на фронте",
   "main": "server.js",
   "engines": {

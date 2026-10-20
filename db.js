@@ -28,6 +28,9 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS messages (id ${ID}, sender_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, text TEXT NOT NULL, created_at TEXT NOT NULL, is_read INTEGER NOT NULL DEFAULT 0)`,
   `CREATE INDEX IF NOT EXISTS messages_out ON messages (sender_id, recipient_id, id)`,
   `CREATE INDEX IF NOT EXISTS messages_in ON messages (recipient_id, sender_id, id)`,
+  `CREATE TABLE IF NOT EXISTS push_subscriptions (id ${ID}, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, endpoint TEXT NOT NULL UNIQUE, p256dh TEXT NOT NULL, auth TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS push_user ON push_subscriptions (user_id)`,
+  `CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
 ];
 
 // колонки, добавленные после версии 1.0; индексы по ним создаются после миграции
@@ -35,6 +38,7 @@ const COLUMNS = [
   ['comments', 'parent_id', 'INTEGER REFERENCES comments(id) ON DELETE CASCADE'],
   ['posts', 'repost_of', 'INTEGER REFERENCES posts(id) ON DELETE CASCADE'],
   ['users', 'onboarded', 'INTEGER NOT NULL DEFAULT 1'], // у старых аккаунтов онбординг считается пройденным
+  ['messages', 'image', 'TEXT'], // фото в личных сообщениях
 ];
 const AFTER = [
   'CREATE INDEX IF NOT EXISTS posts_repost ON posts (repost_of)',
@@ -67,7 +71,7 @@ if (PG) {
       for (const s of AFTER) await pool.query(s);
       // Supabase отдаёт таблицы схемы public через собственный REST API. Включаем RLS без политик: приложение ходит
       // под владельцем базы (ему RLS не мешает), а доступ извне, в обход приложения, закрыт. На обычном Postgres безвредно.
-      for (const t of ['users', 'posts', 'likes', 'comments', 'follows', 'notifications', 'bookmarks', 'post_tags', 'messages'])
+      for (const t of ['users', 'posts', 'likes', 'comments', 'follows', 'notifications', 'bookmarks', 'post_tags', 'messages', 'push_subscriptions', 'kv'])
         await pool.query(`ALTER TABLE ${t} ENABLE ROW LEVEL SECURITY`);
     },
   };

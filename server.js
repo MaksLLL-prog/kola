@@ -7,6 +7,8 @@ const path = require('path');
 const fs = require('fs');
 const { db, DATA_DIR } = require('./db');
 const storage = require('./storage');
+const push = require('./push');
+const zlib = require('zlib');
 
 const PORT = process.env.PORT || 3000;
 const PROD = process.env.NODE_ENV === 'production';
@@ -32,6 +34,23 @@ const IP_HEADER = (process.env.CLIENT_IP_HEADER || '').toLowerCase();
 if (IP_HEADER) app.use((req, res, next) => {
   const v = req.headers[IP_HEADER];
   if (v) Object.defineProperty(req, 'ip', { value: String(v).split(',')[0].trim(), configurable: true });
+  next();
+});
+// gzip для текстовых ответов: без внешних пакетов. Поток событий (SSE) не трогаем — он должен уходить сразу.
+app.use((req, res, next) => {
+  if (req.method === 'HEAD' || req.path === '/api/stream' || !/\bgzip\b/.test(req.get('Accept-Encoding') || '')) return next();
+  const write = res.write.bind(res), end = res.end.bind(res);
+  let gz = null;
+  const start = () => {
+    if (gz !== null) return;
+    const type = String(res.getHeader('Content-Type') || '');
+    if (!/json|javascript|css|html|svg|manifest|text\//.test(type) || res.getHeader('Content-Encoding') || res.statusCode === 204 || res.statusCode === 304) { gz = false; return; }
+    gz = zlib.createGzip({ level: 5 });
+    res.setHeader('Content-Encoding', 'gzip'); res.removeHeader('Content-Length'); res.vary('Accept-Encoding');
+    gz.on('data', (c) => write(c)); gz.on('end', () => end());
+  };
+  res.write = (c, e, cb) => { start(); return gz ? (gz.write(c, e, cb), true) : write(c, e, cb); };
+  res.end = (c, e, cb) => { start(); if (!gz) return end(c, e, cb); if (c) gz.write(c, e); gz.end(); return res; };
   next();
 });
 app.use(express.json({ limit: '50kb' }));
@@ -165,13 +184,24 @@ async function notify(actor, userId, type, postId, text = '') {
   const snippet = text.slice(0, 90), created_at = now();
   const id = await db.insert('INSERT INTO notifications (user_id, actor_id, type, post_id, text, created_at) VALUES (@u,@a,@t,@p,@x,@c)',
     { u: userId, a: actor.id, t: type, p: postId, x: snippet, c: created_at });
-  emit(userId, 'notification', { id, type, post_id: postId, text: snippet, created_at, is_read: 0, username: actor.username, name: actor.name, avatar: actor.avatar });
+  const post = postId ? await db.get('SELECT text, image FROM posts WHERE id = @p', { p: postId }) : null;
+  const post_text = post ? post.text.slice(0, 90) : '', post_image = post ? post.image : null;
+  emit(userId, 'notification', { id, type, post_id: postId, text: snippet, post_text, post_image, created_at, is_read: 0, username: actor.username, name: actor.name, avatar: actor.avatar });
+  push.notifyUser(userId, {
+    title: actor.name || actor.username, body: `${NOTE_PUSH[type] || ''}${snippet || post_text ? ': ' + (snippet || post_text) : ''}`,
+    url: type === 'follow' ? '#/u/' + actor.username : '#/post/' + postId, tag: `n-${type}-${postId}`, icon: actor.avatar || '/icon-192.png',
+  }).catch(() => {});
 }
+const NOTE_PUSH = { like: 'нравится ваш пост', comment: 'прокомментировал(а) ваш пост', reply: 'ответил(а) на ваш комментарий', follow: 'подписался(ась) на вас', mention: 'упомянул(а) вас', repost: 'сделал(а) репост вашего поста' };
 
+const NOTE_FILTERS = { mentions: "('mention','reply','comment')", likes: "('like','repost')", follows: "('follow')" };
+const NOTE_COLS = 'n.id, n.type, n.post_id, n.text, n.created_at, n.is_read, u.username, u.name, u.avatar, p.text AS post_text, p.image AS post_image';
 app.get('/api/notifications', auth, route(async (req, res) => {
-  const items = await db.all(`SELECT n.id, n.type, n.post_id, n.text, n.created_at, n.is_read, u.username, u.name, u.avatar
-    FROM notifications n JOIN users u ON u.id = n.actor_id WHERE n.user_id = @me ORDER BY n.id DESC LIMIT 50`, { me: req.user.id });
-  res.json({ items, unread: items.filter((i) => !i.is_read).length });
+  const f = NOTE_FILTERS[req.query.type], LIM = 30;
+  const rows = await db.all(`SELECT ${NOTE_COLS} FROM notifications n JOIN users u ON u.id = n.actor_id LEFT JOIN posts p ON p.id = n.post_id AND n.post_id > 0
+    WHERE n.user_id = @me AND n.id < @before ${f ? 'AND n.type IN ' + f : ''} ORDER BY n.id DESC LIMIT ${LIM + 1}`, { me: req.user.id, before: cursorOf(req) });
+  const items = rows.slice(0, LIM).map((i) => ({ ...i, post_text: (i.post_text || '').slice(0, 90) }));
+  res.json({ items, more: rows.length > LIM });
 }));
 app.post('/api/notifications/read', auth, route(async (req, res) => {
   await db.run('UPDATE notifications SET is_read = 1 WHERE user_id = @me AND is_read = 0', { me: req.user.id });
@@ -183,12 +213,27 @@ const limitUpdates = limiter(300, 60 * 1000, 'Слишком часто. Под�
 app.get('/api/updates', auth, limitUpdates, route(async (req, res) => {
   const me = req.user.id, msg = parseInt(req.query.msg) || 0, note = parseInt(req.query.note) || 0;
   const [messages, notes] = await Promise.all([
-    db.all(`SELECT m.id, m.text, m.created_at, u.username, u.name, u.avatar FROM messages m JOIN users u ON u.id = m.sender_id
+    db.all(`SELECT m.id, m.text, m.image, m.created_at, u.username, u.name, u.avatar FROM messages m JOIN users u ON u.id = m.sender_id
       WHERE m.recipient_id = @me AND m.id > @msg ORDER BY m.id LIMIT 50`, { me, msg }),
-    db.all(`SELECT n.id, n.type, n.post_id, n.text, n.created_at, n.is_read, u.username, u.name, u.avatar FROM notifications n
-      JOIN users u ON u.id = n.actor_id WHERE n.user_id = @me AND n.id > @note ORDER BY n.id LIMIT 50`, { me, note }),
+    db.all(`SELECT ${NOTE_COLS} FROM notifications n
+      JOIN users u ON u.id = n.actor_id LEFT JOIN posts p ON p.id = n.post_id AND n.post_id > 0 WHERE n.user_id = @me AND n.id > @note ORDER BY n.id LIMIT 50`, { me, note }),
   ]);
   res.json({ messages, notes });
+}));
+
+// ---------- push-подписки браузера ----------
+app.get('/api/push/key', auth, (req, res) => res.json({ key: push.publicKey() }));
+app.post('/api/push/subscribe', auth, limitWrites, route(async (req, res) => {
+  const s = req.body || {}, k = s.keys || {};
+  if (typeof s.endpoint !== 'string' || !/^https:\/\//.test(s.endpoint) || s.endpoint.length > 1000 || typeof k.p256dh !== 'string' || typeof k.auth !== 'string' || k.p256dh.length > 200 || k.auth.length > 100)
+    throw new HttpError(400, 'Некорректная подписка');
+  await db.run('DELETE FROM push_subscriptions WHERE endpoint = @e', { e: s.endpoint });
+  await db.run('INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at) VALUES (@u,@e,@p,@a,@c)', { u: req.user.id, e: s.endpoint, p: k.p256dh, a: k.auth, c: now() });
+  res.json({ ok: true });
+}));
+app.post('/api/push/unsubscribe', auth, route(async (req, res) => {
+  await db.run('DELETE FROM push_subscriptions WHERE endpoint = @e AND user_id = @u', { e: String(req.body.endpoint || ''), u: req.user.id });
+  res.json({ ok: true });
 }));
 
 app.post('/api/stream-ticket', auth, (req, res) => {
@@ -446,7 +491,7 @@ async function markRead(me, peer) { // прочитано всё входяще�
 }
 
 app.get('/api/conversations', auth, route(async (req, res) => {
-  const rows = await db.all(`SELECT u.username, u.name, u.avatar, m.text, m.created_at, (m.sender_id = @me) AS mine,
+  const rows = await db.all(`SELECT u.username, u.name, u.avatar, m.text, m.image, m.created_at, (m.sender_id = @me) AS mine,
       ${cnt('messages x WHERE x.sender_id = u.id AND x.recipient_id = @me AND x.is_read = 0')} AS unread
     FROM users u JOIN messages m ON m.id = (SELECT MAX(id) FROM messages WHERE (sender_id = @me AND recipient_id = u.id) OR (sender_id = u.id AND recipient_id = @me))
     WHERE u.id IN (SELECT recipient_id FROM messages WHERE sender_id = @me UNION SELECT sender_id FROM messages WHERE recipient_id = @me)
@@ -456,12 +501,12 @@ app.get('/api/conversations', auth, route(async (req, res) => {
 
 app.get('/api/messages/:username', auth, route(async (req, res) => {
   const u = await userByName(req.params.username);
-  const rows = await db.all(`SELECT id, sender_id, text, created_at, is_read FROM messages WHERE id < @before AND ${PAIR} ORDER BY id DESC LIMIT 30`,
+  const rows = await db.all(`SELECT id, sender_id, text, image, created_at, is_read FROM messages WHERE id < @before AND ${PAIR} ORDER BY id DESC LIMIT 30`,
     { me: req.user.id, u: u.id, before: cursorOf(req) });
   if (!req.query.before) await markRead(req.user, u);
   res.json({
     user: { username: u.username, name: u.name, avatar: u.avatar },
-    messages: rows.reverse().map((m) => ({ id: m.id, text: m.text, created_at: m.created_at, mine: m.sender_id === req.user.id, is_read: m.sender_id === req.user.id ? +m.is_read : 1 })),
+    messages: rows.reverse().map((m) => ({ id: m.id, text: m.text, image: m.image, created_at: m.created_at, mine: m.sender_id === req.user.id, is_read: m.sender_id === req.user.id ? +m.is_read : 1 })),
     more: rows.length === 30,
   });
 }));
@@ -471,20 +516,22 @@ app.post('/api/messages/:username/read', auth, route(async (req, res) => {
   res.json({ ok: true });
 }));
 
-app.post('/api/messages/:username', auth, limitWrites, route(async (req, res) => {
+app.post('/api/messages/:username', auth, limitWrites, upload.single('image'), route(async (req, res) => {
   const u = await userByName(req.params.username), text = clean(req.body.text, 2000);
   if (u.id === req.user.id) throw new HttpError(400, 'Нельзя написать самому себе');
-  if (!text) throw new HttpError(400, 'Сообщение не может быть пустым');
-  const created_at = now();
-  const id = await db.insert('INSERT INTO messages (sender_id, recipient_id, text, created_at) VALUES (@s,@r,@t,@c)', { s: req.user.id, r: u.id, t: text, c: created_at });
-  emit(u.id, 'message', { id, text, created_at, username: req.user.username, name: req.user.name, avatar: req.user.avatar });
-  res.json({ id, text, created_at, mine: true, is_read: 0 });
+  if (!text && !req.file) throw new HttpError(400, 'Сообщение не может быть пустым');
+  const image = req.file ? await saveImage(req.file) : null, created_at = now();
+  const id = await db.insert('INSERT INTO messages (sender_id, recipient_id, text, image, created_at) VALUES (@s,@r,@t,@i,@c)', { s: req.user.id, r: u.id, t: text, i: image, c: created_at });
+  emit(u.id, 'message', { id, text, image, created_at, username: req.user.username, name: req.user.name, avatar: req.user.avatar });
+  push.notifyUser(u.id, { title: req.user.name || req.user.username, body: text || '📷 Фото', url: '#/messages/' + req.user.username, tag: 'msg-' + req.user.username, icon: req.user.avatar || '/icon-192.png' }).catch(() => {});
+  res.json({ id, text, image, created_at, mine: true, is_read: 0 });
 }));
 
 // ---------- служебное и статика ----------
 app.get('/healthz', route(async (req, res) => { await db.get('SELECT 1 AS ok', {}); res.json({ ok: true }); }));
 app.use('/uploads', express.static(storage.UPLOADS, { maxAge: '7d', immutable: true }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.get('/sw.js', (req, res) => { res.set('Cache-Control', 'no-cache'); res.type('js').sendFile(path.join(__dirname, 'public', 'sw.js')); });
+app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h' }));
 app.use('/api', (req, res) => res.status(404).json({ error: 'Не найдено' }));
 app.use((err, req, res, next) => {
   if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
@@ -494,7 +541,7 @@ app.use((err, req, res, next) => {
 });
 
 let server;
-db.init().then(backfillTags).then(() => {
+db.init().then(push.init).then(backfillTags).then(() => {
   server = app.listen(PORT, () => console.log(`Kolo запущен: http://localhost:${PORT} (${db.kind})`));
 }).catch((e) => { console.error('Не удалось запустить:', e); process.exit(1); });
 
