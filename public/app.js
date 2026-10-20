@@ -51,6 +51,10 @@ const I = {
   x: ic('<path d="M6 6l12 12M18 6L6 18"/>', 'stroke-width="2.5"'),
   plus: ic('<path d="M12 5v14M5 12h14"/>', 'stroke-width="2.6"'),
   send: ic('<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>'),
+  pin: ic('<path d="M9 3h6l-1 6 3 3v2H7v-2l3-3zM12 14v7"/>'),
+  more: ic('<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>'),
+  link: ic('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
+  reply: ic('<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v3"/>'),
   clip: ic('<path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8"/>'),
   edit: ic('<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'),
   at: ic('<circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/>'),
@@ -115,6 +119,26 @@ async function pickedImage(file) { // проверка и подготовка �
   return f;
 }
 
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); } catch { const e = document.createElement('textarea'); e.value = t; document.body.appendChild(e); e.select(); try { document.execCommand('copy'); } catch {} e.remove(); }
+  toast('Скопировано');
+}
+const LIFE_L = { family: 'Семья и дети', career: 'Карьера и деньги', growth: 'Саморазвитие', creativity: 'Творчество', fun: 'Развлечения и отдых', travel: 'Путешествия', knowledge: 'Знания и опыт', health: 'Здоровье и спорт' };
+const PEOPLE_L = { kindness: 'Доброта', humor: 'Чувство юмора', mind: 'Ум и креативность', honesty: 'Честность', courage: 'Смелость', beauty: 'Красота', loyalty: 'Верность' };
+const REL_L = { searching: 'В активном поиске', single: 'Не в отношениях', dating: 'Встречается', inlove: 'Влюблён(а)', engaged: 'Помолвлен(а)', married: 'В браке', complicated: 'Всё сложно' };
+const REL_PARTNER = ['dating', 'inlove', 'engaged', 'married', 'complicated'];
+const relLabel = (r, g) => ({ single: g === 'm' ? 'Не женат' : g === 'f' ? 'Не замужем' : 'Не в отношениях', inlove: g === 'm' ? 'Влюблён' : g === 'f' ? 'Влюблена' : 'Влюблён(а)', engaged: g === 'm' ? 'Помолвлен' : g === 'f' ? 'Помолвлена' : 'Помолвлен(а)', married: g === 'm' ? 'Женат' : g === 'f' ? 'Замужем' : 'В браке' }[r] || REL_L[r] || '');
+
+ctxHooks.post = (el) => {
+  const id = el.dataset.id, txt = el.querySelector('.ptext')?.textContent, pinned = +me.pinned_post === +id;
+  return [
+    txt && { label: 'Копировать текст', fn: () => copyText(txt) },
+    { label: 'Копировать ссылку', fn: () => copyText(location.origin + '/#/post/' + id) },
+    { label: pinned ? 'Открепить из профиля' : 'Закрепить в профиле', icon: I.pin, fn: async () => { try { const r = await api(`/posts/${id}/pin`, { method: 'POST' }); me.pinned_post = r.pinned ? +id : null; toast(r.pinned ? 'Закреплено в вашем профиле' : 'Откреплено'); if (location.hash.startsWith('#/u/')) route(); } catch (err) { toast(err.message); } } },
+    { label: 'В закладки', fn: () => el.querySelector('[data-bm]')?.click() },
+    el.querySelector('.ph .del') && { label: 'Удалить', icon: I.trash, danger: true, fn: () => el.querySelector('.ph .del').click() },
+  ];
+};
 async function loadMe() { me = await api('/me'); unread = me.unread || 0; unreadMsgs = me.unread_messages || 0; pollMsg = me.last_msg || 0; pollNote = me.last_note || 0; return me; }
 
 // ---------- каркас: строится один раз, дальше меняется только содержимое ----------
@@ -196,10 +220,11 @@ const sugHTML = (u) => `<div class="sug"><a href="#/u/${esc(u.username)}">${avat
 // ---------- посты ----------
 function postHTML(p) {
   const rp = p.reposted_by ? `<div class="rp muted">${I.repost}<span>${p.reposted_by === me.username ? 'Вы сделали репост' : `Репост от <a href="#/u/${esc(p.reposted_by)}">${esc(p.reposted_by_name || p.reposted_by)}</a>`}</span></div>` : '';
-  return `<article class="card post" data-id="${p.id}">${rp}
+  return `<article class="card post" data-id="${p.id}" data-ctx="post">${rp}
     <header class="ph"><a class="pav" href="#/u/${esc(p.username)}" tabindex="-1" aria-hidden="true">${avatar(p)}</a>
       <div class="pmeta"><a class="pname" href="#/u/${esc(p.username)}">${esc(p.name || p.username)}</a>
         <div class="psub"><span class="pun">@${esc(p.username)}</span><a class="ptime" href="#/post/${p.id}" title="${esc(new Date(p.created_at).toLocaleString('ru'))}">${ago(p.created_at)}</a></div></div>
+      <button class="icon more" data-more aria-label="Ещё">${I.more}</button>
       ${p.username === me.username ? `<button class="icon del" data-del="${p.id}" aria-label="Удалить запись">${I.trash}</button>` : ''}</header>
     <div class="pbody">
       ${p.text ? `<p class="ptext">${linkify(p.text)}</p>` : ''}
@@ -221,11 +246,12 @@ const errBox = (e) => emptyBox(esc(e.message), '', '<a class="btn" href="#/">В 
 function composerHTML(withSubmit = true) {
   return `<form class="card composer" id="composer">${avatar(me)}
     <div class="col">
-      <textarea name="text" rows="2" maxlength="500" placeholder="Что нового?" aria-label="Текст поста"></textarea>
+      <textarea name="text" rows="2" maxlength="500" placeholder="Что у вас нового?" aria-label="Текст поста"></textarea>
       <div class="preview" id="preview" hidden><img alt="Предпросмотр"><button type="button" class="icon" id="unpick" aria-label="Убрать картинку">${I.x}</button></div>
       <div class="row">
         <label class="icon" title="Добавить фото" aria-label="Добавить фото" style="cursor:pointer">${I.image}<input type="file" accept="image/*" id="pick" hidden></label>
-        <span class="count" id="count">0 / 500</span>
+        <span class="grow"></span>
+        <span class="count" id="count">0 / 500</span><i class="ring" id="ring" aria-hidden="true"></i>
         ${withSubmit ? '<button class="btn" type="submit">Опубликовать</button>' : ''}
       </div></div></form>`;
 }
@@ -234,7 +260,7 @@ function bindComposer(onPost) {
   let file = null;
   ta.addEventListener('input', () => {
     ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px';
-    const c = document.getElementById('count'); c.textContent = `${ta.value.length} / 500`; c.classList.toggle('over', ta.value.length > 480);
+    const c = document.getElementById('count'); c.textContent = `${ta.value.length} / 500`; c.classList.toggle('over', ta.value.length > 480); c.classList.toggle('show', ta.value.length > 400); document.getElementById('ring')?.style.setProperty('--p', ta.value.length / 500);
   });
   const setFile = (x) => {
     file = x; prev.hidden = !x;
@@ -453,48 +479,95 @@ function newPostView() {
 
 async function profileView(username) {
   const v = view, own = username.toLowerCase() === me.username.toLowerCase();
-  const main = page({ key: own ? 'me' : '', title: titleOf(own ? 'Профиль' : '&nbsp;'), back: !own });
+  const main = page({ key: own ? 'me' : '', title: titleOf(own ? 'Профиль' : '&nbsp;'), back: !own, mode: own ? 'prof' : '' });
   main.innerHTML = `<div class="card pcard"><div class="pctop"><span class="av xl" style="--h:${hue(username)}"></span></div></div><div class="list">${skel(2)}</div>`;
   let data;
   try { data = await api('/users/' + encodeURIComponent(username)); }
   catch (e) { return void (v === view && (main.innerHTML = errBox(e))); }
   if (v !== view) return;
-  const u = data.user;
+  const u = data.user, pinned = data.pinned;
   document.title = baseTitle = `${u.name || u.username} — Kolo`;
   if (!own) document.querySelector('#head .ht').innerHTML = titleOf(esc(u.name || u.username));
   const row = (id, icon, label, extra = '') => `<${id.startsWith('#') ? 'a href="' + id + '"' : 'button type="button" id="' + id + '"'} class="mrow2">${icon}<span>${label}</span>${extra}</${id.startsWith('#') ? 'a' : 'button'}>`;
   const st = (n, label, id = '') => `<div><b${id ? ` id="${id}"` : ''}>${n}</b><span>${label}</span></div>`;
-  main.innerHTML = `<section class="card pcard">
-    <div class="pctop">${avatar(u, 'xl')}
+  const cover = u.cover
+    ? `<div class="pcover"><img src="${esc(u.cover)}" alt="Шапка профиля" data-zoom decoding="async">${own ? `<button type="button" class="btn sm line pcedit" id="drawcover">${I.edit}Рисовать</button>` : ''}</div>`
+    : own ? `<button type="button" class="pcover cta" id="drawcover">${I.edit}<b>Нарисуйте свою шапку</b><span>Кисть, неон, симметрия — прямо здесь</span></button>` : '';
+  const facts = [];
+  if (u.relationship) facts.push(`<span class="fact">${I.heart}<span>${relLabel(u.relationship, u.gender)}${u.partner ? ' · ' + (u.partner.username ? `<a href="#/u/${esc(u.partner.username)}">${esc(u.partner.name || u.partner.username)}</a>` : esc(u.partner.name)) : ''}</span></span>`);
+  if (u.website) facts.push(`<a class="fact" href="${esc(u.website)}" target="_blank" rel="noopener noreferrer nofollow">${I.link}<span>${esc(u.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))}</span></a>`);
+  if (u.telegram) facts.push(`<a class="fact" href="https://t.me/${esc(u.telegram)}" target="_blank" rel="noopener noreferrer">${I.send}<span>@${esc(u.telegram)}</span></a>`);
+  if (LIFE_L[u.life_main]) facts.push(`<span class="fact"><small>Главное в жизни</small><span>${LIFE_L[u.life_main]}</span></span>`);
+  if (PEOPLE_L[u.people_main]) facts.push(`<span class="fact"><small>Главное в людях</small><span>${PEOPLE_L[u.people_main]}</span></span>`);
+  const tags = (u.interests || '').split(',').filter(Boolean);
+  const pfacts = facts.length || tags.length ? `<div class="pfacts">${facts.join('')}${tags.length ? `<div class="chips">${tags.map((t) => `<a class="tagchip" href="#/search/${encodeURIComponent(t)}">#${esc(t)}</a>`).join('')}</div>` : ''}</div>` : '';
+  const list = pinned ? data.posts.filter((p) => p.id !== pinned.id) : data.posts;
+  main.innerHTML = `<section class="card pcard">${cover}
+    <div class="pctop ${u.cover || own ? 'hascover' : ''}">${avatar(u, 'xl')}
       <div class="pcinfo"><h2>${esc(u.name || u.username)}</h2><div class="muted">@${esc(u.username)}</div>
         ${u.bio ? `<p class="bio">${linkify(u.bio)}</p>` : ''}
         <div class="pcbtns">${own ? '<button class="btn line" id="edit">Редактировать</button>' : `<button class="btn ${u.isFollowing ? 'line' : ''}" data-follow="${esc(u.username)}" id="fbtn">${u.isFollowing ? 'Вы читаете' : 'Читать'}</button><a class="btn line" href="#/messages/${esc(u.username)}">Написать</a>`}</div></div></div>
+    ${pfacts}
     <div class="stats">${st(u.posts, pl(u.posts, 'запись', 'записи', 'записей'))}${st(u.followers, pl(u.followers, 'читатель', 'читателя', 'читателей'), 'fcount')}${st(u.following, 'в подписках')}</div></section>
-    ${own ? `<section class="card menu">${row('#/bookmarks', I.bookmark, 'Закладки')}${row('#/notifications', I.bell, 'Уведомления')}${row('themebtn', effTheme() === 'light' ? I.moon : I.sun, effTheme() === 'light' ? 'Тёмная тема' : 'Светлая тема')}${row('logout2', I.out, 'Выйти')}</section>` : ''}
-    <div class="list" id="feed">${feedList(data.posts, emptyBox('Постов пока нет', own ? 'Опубликуйте первый.' : ''))}</div>`;
-  infinite(document.getElementById('feed'), data.posts, (n, last) => api(`/users/${encodeURIComponent(username)}?before=${lastCur(last)}`).then((d) => d.posts));
+    ${own ? `<section class="card menu">${row('#/bookmarks', I.bookmark, 'Закладки')}${row('#/notifications', I.bell, 'Уведомления')}${row('themebtn', effTheme() === 'light' ? I.moon : I.sun, effTheme() === 'light' ? 'Тёмная тема' : 'Светлая тема')}${row('logout2', I.out, 'Выйти')}</section>${composerHTML()}` : ''}
+    <div class="list" id="feed">${pinned ? `<div class="pinned"><div class="pinlab">${I.pin}<span>Закреплённая запись</span></div>${postHTML(pinned)}</div>` : ''}${feedList(list, pinned ? '' : emptyBox('Постов пока нет', own ? 'Опубликуйте первый — прямо здесь, на своей странице.' : ''))}</div>`;
+  const feed = document.getElementById('feed');
+  infinite(feed, data.posts, (n, last) => api(`/users/${encodeURIComponent(username)}?before=${lastCur(last)}`).then((d) => d.posts));
   if (own) {
     document.getElementById('edit').onclick = () => editDialog();
     document.getElementById('logout2').onclick = logout;
     document.getElementById('themebtn').onclick = () => { toggleTheme(); route(); };
+    bindComposer((p) => { delete feedCache.all; delete feedCache.following; feed.querySelector('.empty')?.remove(); const pin = feed.querySelector('.pinned'); pin ? pin.insertAdjacentHTML('afterend', postHTML(p)) : feed.insertAdjacentHTML('afterbegin', postHTML(p)); });
+    document.getElementById('drawcover')?.addEventListener('click', async () => {
+      const f = await drawEditor(u.cover); if (!f) return;
+      const fd = new FormData(); fd.append('name', me.name); fd.append('bio', me.bio); fd.append('cover', f);
+      try { me = await api('/me', { method: 'PUT', body: fd }); toast('Шапка сохранена'); route(); } catch (err) { toast(err.message); }
+    });
   }
 }
 
 function editDialog() {
-  const d = document.createElement('dialog');
+  const d = document.createElement('dialog'); d.className = 'edlg';
+  const opts = (map, cur, empty = 'Не указано') => `<option value="">${empty}</option>${Object.entries(map).map(([k, v]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${v}</option>`).join('')}`;
+  const radio = (v, label) => `<label><input type="radio" name="gender" value="${v}" ${(me.gender || '') === v ? 'checked' : ''}><span>${label}</span></label>`;
+  let coverFile = null, removeCover = false;
   d.innerHTML = `<form method="dialog" id="eform"><h2>Изменить профиль</h2>
-    <label class="field"><span>Имя</span><input name="name" maxlength="40" value="${esc(me.name)}"></label>
-    <label class="field"><span>О себе</span><textarea name="bio" rows="3" maxlength="160">${esc(me.bio)}</textarea></label>
-    <label class="field"><span>Аватар</span><input name="avatar" type="file" accept="image/*"></label>
-    <div class="actions"><button type="button" class="btn line" id="cancel">Отмена</button><button class="btn" type="submit">Сохранить</button></div></form>`;
+    <section class="esec"><h3>Основное</h3>
+      <label class="field"><span>Имя</span><input name="name" maxlength="40" value="${esc(me.name)}"></label>
+      <label class="field"><span>О себе</span><textarea name="bio" rows="3" maxlength="160">${esc(me.bio)}</textarea></label>
+      <label class="field"><span>Аватар</span><input name="avatar" type="file" accept="image/*"></label></section>
+    <section class="esec"><h3>Шапка профиля</h3>
+      <div class="ecover" id="ecover" ${me.cover ? `style="background-image:url('${esc(me.cover)}')"` : ''}><span>${me.cover ? '' : 'Шапки пока нет'}</span></div>
+      <div class="erow"><button type="button" class="btn line sm" id="edraw">${I.edit}Нарисовать</button><button type="button" class="btn line sm" id="erm" ${me.cover ? '' : 'hidden'}>Убрать</button></div></section>
+    <section class="esec"><h3>Личное</h3>
+      <div class="field"><span>Пол <small class="muted">нужен для правильных окончаний в уведомлениях</small></span><div class="pills">${radio('m', 'Мужской')}${radio('f', 'Женский')}${radio('', 'Не указан')}</div></div>
+      <label class="field"><span>Семейное положение</span><select name="relationship">${opts(REL_L, me.relationship || '')}</select></label>
+      <label class="field" id="partnerf" ${REL_PARTNER.includes(me.relationship) ? '' : 'hidden'}><span>Партнёр <small class="muted">имя пользователя, необязательно</small></span><input name="partner" maxlength="20" placeholder="@username" value="${esc(me.partner || '')}" autocapitalize="none"></label></section>
+    <section class="esec"><h3>Контакты</h3>
+      <label class="field"><span>Сайт</span><input name="website" maxlength="100" placeholder="example.com" value="${esc(me.website || '')}" inputmode="url" autocapitalize="none"></label>
+      <label class="field"><span>Telegram</span><input name="telegram" maxlength="60" placeholder="@username" value="${esc(me.telegram || '')}" autocapitalize="none"></label></section>
+    <section class="esec"><h3>Жизненная позиция</h3>
+      <label class="field"><span>Главное в жизни</span><select name="life_main">${opts(LIFE_L, me.life_main || '')}</select></label>
+      <label class="field"><span>Главное в людях</span><select name="people_main">${opts(PEOPLE_L, me.people_main || '')}</select></label>
+      <label class="field"><span>Интересы <small class="muted">через запятую, до 8</small></span><input name="interests" maxlength="120" placeholder="design, coding, anime" value="${esc((me.interests || '').split(',').filter(Boolean).join(', '))}" autocapitalize="none"></label></section>
+    <div class="actions sticky"><button type="button" class="btn line" id="cancel">Отмена</button><button class="btn" type="submit">Сохранить</button></div></form>`;
   document.body.appendChild(d); d.showModal();
   d.querySelector('#cancel').onclick = () => d.close();
   d.addEventListener('close', () => d.remove());
+  const rel = d.querySelector('[name=relationship]'), pf = d.querySelector('#partnerf');
+  rel.onchange = () => { pf.hidden = !REL_PARTNER.includes(rel.value); };
+  const ec = d.querySelector('#ecover'), rm = d.querySelector('#erm');
+  d.querySelector('#edraw').onclick = async () => {
+    const f = await drawEditor(coverFile ? URL.createObjectURL(coverFile) : (removeCover ? null : me.cover));
+    if (!f) return; coverFile = f; removeCover = false; ec.style.backgroundImage = `url('${URL.createObjectURL(f)}')`; ec.firstChild.textContent = ''; rm.hidden = false;
+  };
+  rm.onclick = () => { coverFile = null; removeCover = true; ec.style.backgroundImage = ''; ec.firstChild.textContent = 'Шапки пока нет'; rm.hidden = true; };
   d.querySelector('#eform').onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target), file = fd.get('avatar');
     fd.delete('avatar');
     if (file && file.size) { const f = await pickedImage(file); if (!f) return; fd.append('avatar', f); }
+    if (coverFile) fd.append('cover', coverFile); else if (removeCover) fd.append('remove_cover', '1');
     try { me = await api('/me', { method: 'PUT', body: fd }); d.close(); toast('Профиль сохранён'); sideData = null; app.innerHTML = ''; route(); }
     catch (err) { toast(err.message); }
   };
@@ -510,35 +583,49 @@ async function postView(id) {
   if (v !== view) return;
   const replies = {};
   data.comments.forEach((c) => { if (c.parent_id) (replies[c.parent_id] ||= []).push(c); });
-  const cHTML = (c, isReply) => `<div class="comment ${isReply ? 'reply' : ''}"><a href="#/u/${esc(c.username)}">${avatar(c, 'sm')}</a><div class="pbody"><header>
+  const cHTML = (c, isReply) => `<div class="comment ${isReply ? 'reply' : ''}" data-ctx="comment" data-root="${c.parent_id || c.id}" data-who="${esc(c.username)}"><a href="#/u/${esc(c.username)}">${avatar(c, 'sm')}</a><div class="pbody"><header>
     <a class="pname" href="#/u/${esc(c.username)}">${esc(c.name || c.username)}</a><span class="muted ptime">${ago(c.created_at)}</span>
     <button class="link" data-reply="${c.parent_id || c.id}" data-who="${esc(c.username)}">Ответить</button></header>
-    <p class="ptext">${linkify(c.text)}</p></div></div>`;
+    ${c.text ? `<p class="ptext">${linkify(c.text)}</p>` : ''}${c.image ? `<img class="cimg" data-zoom src="${esc(c.image)}" alt="Изображение в комментарии" loading="lazy" decoding="async">` : ''}</div></div>`;
   const threadHTML = (c) => `<div class="thread" data-root="${c.id}">${cHTML(c)}${(replies[c.id] || []).map((r) => cHTML(r, true)).join('')}</div>`;
   const roots = data.comments.filter((c) => !c.parent_id);
   main.innerHTML = `<div class="list">${postHTML(data.post)}</div>
     <section class="card comments" id="comments">${roots.map(threadHTML).join('') || '<div class="nocom muted">Комментариев пока нет. Напишите первый</div>'}</section>
     <form class="cform" id="cform">
       <div class="chip" id="rchip" hidden><span></span><button type="button" class="icon" id="rcancel" aria-label="Отменить ответ">${I.x}</button></div>
-      <div class="crow"><input name="text" maxlength="300" placeholder="Написать комментарий…" aria-label="Комментарий" autocomplete="off" required>
+      <div class="mpreview" id="cprev" hidden><img alt="Выбранная картинка"><button type="button" class="icon" id="crm" aria-label="Убрать картинку">${I.x}</button></div>
+      <div class="crow"><label class="icon attach" title="Картинка или GIF" aria-label="Прикрепить картинку или GIF">${I.image}<input type="file" accept="image/*" id="cfile" hidden></label>
+        <input name="text" maxlength="300" placeholder="Написать комментарий…" aria-label="Комментарий" autocomplete="off">
         <button class="send" type="submit" aria-label="Отправить">${I.send}</button></div></form>`;
   const f = document.getElementById('cform'), chip = document.getElementById('rchip');
-  let replyTo = null;
+  let replyTo = null, cfile = null;
+  const cprev = document.getElementById('cprev'), cin = document.getElementById('cfile');
+  const setCFile = (x) => { cfile = x; cprev.hidden = !x; if (x) cprev.querySelector('img').src = URL.createObjectURL(x); else cin.value = ''; };
+  cin.onchange = async () => { const x = await pickedImage(cin.files[0]); if (x) setCFile(x); else cin.value = ''; };
+  document.getElementById('crm').onclick = () => setCFile(null);
   const setReply = (rootId, who) => {
     replyTo = rootId; chip.hidden = !rootId;
     if (rootId) { chip.querySelector('span').textContent = 'Ответ для @' + who; f.text.value = '@' + who + ' '; f.text.focus(); }
   };
   document.getElementById('comments').onclick = (e) => { const b = e.target.closest('[data-reply]'); if (b) setReply(+b.dataset.reply, b.dataset.who); };
+  const cbox = document.getElementById('comments');
+  ctxHooks.comment = (el) => [
+    { label: 'Ответить', icon: I.reply, fn: () => setReply(+el.dataset.root, el.dataset.who) },
+    el.querySelector('.ptext') && { label: 'Копировать текст', fn: () => copyText(el.querySelector('.ptext').textContent) },
+  ];
+  swipeReply(cbox, '.comment', (el) => setReply(+el.dataset.root, el.dataset.who));
   document.getElementById('rcancel').onclick = () => { setReply(null); f.text.value = ''; };
   f.onsubmit = async (e) => {
     e.preventDefault();
     const btn = f.querySelector('.send'); btn.disabled = true;
     try {
-      const c = await api(`/posts/${id}/comments`, { method: 'POST', body: { text: f.text.value, parent_id: replyTo } });
+      if (!f.text.value.trim() && !cfile) { btn.disabled = false; return toast('Напишите текст или добавьте картинку'); }
+      const fd = new FormData(); fd.append('text', f.text.value); if (replyTo) fd.append('parent_id', replyTo); if (cfile) fd.append('image', cfile);
+      const c = await api(`/posts/${id}/comments`, { method: 'POST', body: fd });
       const box = document.getElementById('comments'); box.querySelector('.nocom')?.remove();
       if (c.parent_id) box.querySelector(`.thread[data-root="${c.parent_id}"]`)?.insertAdjacentHTML('beforeend', cHTML(c, true));
       else box.insertAdjacentHTML('beforeend', threadHTML(c));
-      f.reset(); setReply(null);
+      f.reset(); setReply(null); setCFile(null);
       const cnt = main.querySelector('.post [href^="#/post/"].act span'); if (cnt) cnt.textContent = (+cnt.textContent || 0) + 1;
     } catch (err) { toast(err.message); }
     btn.disabled = false;
@@ -687,6 +774,7 @@ async function threadView(username) {
   main.innerHTML = `<div class="chat" id="chat">
     <div class="msgs" id="msgs" aria-live="polite"></div>
     <form class="mform" id="mform">
+      <div class="mreply" id="mreply" hidden><div><b></b><span></span></div><button type="button" class="icon" id="mrx" aria-label="Отменить ответ">${I.x}</button></div>
       <div class="mpreview" id="mprev" hidden><img alt="Выбранное фото"><button type="button" class="icon" id="mrm" aria-label="Убрать фото">${I.x}</button></div>
       <div class="mrow">
         <label class="icon attach" aria-label="Прикрепить фото" title="Прикрепить фото">${I.clip}<input type="file" accept="image/*" id="mfile" hidden></label>
@@ -696,8 +784,9 @@ async function threadView(username) {
   const box = document.getElementById('msgs'), f = document.getElementById('mform'), ta = f.text, sendBtn = f.querySelector('.send'), prev = document.getElementById('mprev'), fileIn = document.getElementById('mfile');
 
   const tick = (m) => m.mine ? `<i class="tick ${m.is_read ? 'read' : ''}" aria-label="${m.is_read ? 'Прочитано' : 'Отправлено'}">${m.is_read ? I.checks : I.check}</i>` : '';
-  const msgHTML = (m, st = '') => `<div class="msg ${m.mine ? 'mine' : ''} ${st}" data-id="${m.id || ''}" data-t="${m.created_at || ''}">
-    ${m.image ? `<img class="mimg" data-zoom src="${esc(m.image)}" alt="Фото" decoding="async">` : ''}${m.text ? `<p>${linkify(m.text)}</p>` : ''}
+  const quote = (r) => r ? `<div class="mquote" data-q="${r.id}"><b>${r.mine ? 'Вы' : esc(peer.name || peer.username)}</b><span>${esc((r.text || '').slice(0, 90)) || 'Фото'}</span></div>` : '';
+  const msgHTML = (m, st = '') => `<div class="msg ${m.mine ? 'mine' : ''} ${st}" data-id="${m.id || ''}" data-t="${m.created_at || ''}" data-ctx="msg">
+    ${quote(m.reply)}${m.image ? `<img class="mimg" data-zoom src="${esc(m.image)}" alt="Фото" decoding="async">` : ''}${m.text ? `<p>${linkify(m.text)}</p>` : ''}
     <span class="mmeta">${timeOf(m.created_at)}${tick(m)}</span></div>`;
   const dayHTML = (m) => { const d = dayOf(m.created_at); if (d === lastDay) return ''; lastDay = d; return `<div class="day">${d}</div>`; };
   const regroup = () => { // подряд идущие сообщения одного автора (до 5 минут): плотнее, время только у последнего
@@ -743,7 +832,7 @@ async function threadView(username) {
     if (m.username.toLowerCase() !== peer.username.toLowerCase()) return false;
     if (box.querySelector(`[data-id="${m.id}"]`)) return true; // уже есть (пришло и по потоку, и по опросу)
     const was = nearBottom();
-    const msg = { id: m.id, text: m.text, image: m.image, created_at: m.created_at, mine: false, is_read: 1 };
+    const msg = { id: m.id, text: m.text, image: m.image, reply: m.reply || null, created_at: m.created_at, mine: false, is_read: 1 };
     list.push(msg); append(msg); if (was) toBottom();
     api(`/messages/${encodeURIComponent(peer.username)}/read`, { method: 'POST' }).catch(() => {});
     return true;
@@ -761,6 +850,24 @@ async function threadView(username) {
     if (d.messages.some((m) => m.mine && m.is_read)) markRead();
     if (added && was) toBottom();
   };
+
+  // ---- ответ, меню, свайп ----
+  let replyTo = null;
+  const rbar = document.getElementById('mreply');
+  const setReply = (m) => {
+    replyTo = m ? { id: m.id, text: m.text, image: m.image, mine: m.mine } : null; rbar.hidden = !m;
+    if (m) { rbar.querySelector('b').textContent = m.mine ? 'Вы' : (peer.name || peer.username); rbar.querySelector('span').textContent = m.text ? m.text.slice(0, 90) : 'Фото'; ta.focus(); }
+  };
+  const msgOf = (el) => list.find((x) => String(x.id) === el.dataset.id);
+  const replyTo_ = (el) => { const m = msgOf(el); if (!m) return toast('Сообщение ещё отправляется'); setReply(m); };
+  document.getElementById('mrx').onclick = () => setReply(null);
+  ctxHooks.msg = (el) => { const m = msgOf(el); if (!m) return []; return [
+    { label: 'Ответить', icon: I.reply, fn: () => setReply(m) },
+    m.text && { label: 'Копировать', fn: () => copyText(m.text) },
+    m.mine && { label: 'Удалить', icon: I.trash, danger: true, fn: async () => { try { await api('/messages/' + m.id, { method: 'DELETE' }); list = list.filter((x) => x !== m); el.remove(); regroup(); } catch (err) { toast(err.message); } } },
+  ]; };
+  swipeReply(box, '.msg', replyTo_);
+  box.addEventListener('click', (e) => { const q = e.target.closest('[data-q]'); if (!q) return; const t = box.querySelector(`.msg[data-id="${q.dataset.q}"]`); if (t) { t.scrollIntoView({ block: 'center', behavior: 'smooth' }); t.classList.add('flash'); setTimeout(() => t.classList.remove('flash'), 1200); } });
 
   // ---- ввод: текст + фото ----
   let file = null;
@@ -786,12 +893,12 @@ async function threadView(username) {
     e.preventDefault();
     const text = ta.value.trim(), img = file;
     if (!text && !img) return;
-    const tmp = { id: 0, text, image: img ? URL.createObjectURL(img) : null, created_at: new Date().toISOString(), mine: true, is_read: 0 };
-    ta.value = ''; grow(); setFile(null); ta.focus();
+    const rep = replyTo, tmp = { id: 0, text, image: img ? URL.createObjectURL(img) : null, reply: rep, created_at: new Date().toISOString(), mine: true, is_read: 0 };
+    ta.value = ''; grow(); setFile(null); setReply(null); ta.focus();
     const el = append(tmp, 'sending'); toBottom(); stick = true;
     const go = async () => { // сообщение появляется сразу, а уходит в фоне; при ошибке его можно нажать и отправить снова
       el.classList.remove('failed'); el.classList.add('sending');
-      const fd = new FormData(); fd.append('text', text); if (img) fd.append('image', img);
+      const fd = new FormData(); fd.append('text', text); if (img) fd.append('image', img); if (rep) fd.append('reply_to', rep.id);
       try {
         const m = await api('/messages/' + encodeURIComponent(peer.username), { method: 'POST', body: fd });
         list.push(m); el.dataset.id = m.id; el.classList.remove('sending');
@@ -924,6 +1031,8 @@ function zoom(src) {
 document.addEventListener('click', async (e) => {
   const z = e.target.closest('img[data-zoom]');
   if (z) return zoom(z.src);
+  const more = e.target.closest('[data-more]');
+  if (more) { const r = more.getBoundingClientRect(); return void ctxFor(more, r.right - 200, r.bottom + 4); }
   const navA = e.target.closest('.nav a[href], .mlogo');
   if (navA) { // повторное нажатие на текущий раздел: наверх и обновить
     const h = navA.getAttribute('href');
@@ -1027,6 +1136,7 @@ async function connectStream() {
   lastBeat = 0;
   stream.addEventListener('hb', () => { if (!lastBeat) console.info('[kolo] живые обновления: поток событий работает'); lastBeat = Date.now(); });
   stream.addEventListener('notification', (e) => { lastBeat = Date.now(); onNotification(JSON.parse(e.data)); });
+  stream.addEventListener('msgdel', (e) => { try { document.querySelector(`.msg[data-id="${JSON.parse(e.data).id}"]`)?.remove(); } catch {} });
   stream.addEventListener('message', (e) => { lastBeat = Date.now(); onMessage(JSON.parse(e.data)); });
   stream.addEventListener('read', (e) => { lastBeat = Date.now(); if (readHook) readHook(JSON.parse(e.data).username); });
   stream.addEventListener('post', (e) => {
@@ -1043,7 +1153,7 @@ async function connectStream() {
 async function route() {
   document.title = baseTitle = 'Kolo'; view++;
   io?.disconnect(); io = null; msgHook = null; readHook = null; pollHook = null; noteHook = null;
-  chatCleanup?.(); chatCleanup = null;
+  chatCleanup?.(); chatCleanup = null; delete ctxHooks.msg; delete ctxHooks.comment; closeCtx();
   const [, a, b] = (location.hash.slice(1) || '/').split('/');
   if (!localStorage.getItem('kolo_token')) { document.body.dataset.mode = ''; return a === 'register' ? registerView() : authView(); }
   if (!me) { try { await loadMe(); } catch { return authView(); } }

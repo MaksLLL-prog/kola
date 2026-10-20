@@ -21,7 +21,7 @@
 
 ```bash
 npm install
-npm start          # http://localhost:3000, база и и кап картинки в ./data
+npm start          # http://localhost:3000, база и картинки в ./data
 ```
 
 ## Продакшн (VPS + HTTPS)

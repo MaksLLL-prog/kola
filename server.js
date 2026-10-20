@@ -109,7 +109,7 @@ const sign = (id) => jwt.sign({ id }, SECRET, { expiresIn: '30d' });
 const auth = route(async (req, res, next) => {
   let id;
   try { id = jwt.verify((req.get('Authorization') || '').replace(/^Bearer /, ''), SECRET).id; } catch { throw new HttpError(401, 'Нужно войти в аккаунт'); }
-  const user = await db.get('SELECT id, username, name, bio, avatar, onboarded FROM users WHERE id = @id', { id });
+  const user = await db.get('SELECT id, username, name, bio, avatar, onboarded, gender, relationship, partner, website, telegram, life_main, people_main, interests, cover, pinned_post FROM users WHERE id = @id', { id });
   if (!user) throw new HttpError(401, 'Нужно войти в аккаунт');
   req.user = user; next();
 });
@@ -160,12 +160,38 @@ app.post('/api/me/onboarded', auth, route(async (req, res) => {
   res.json({ ok: true });
 }));
 
-app.put('/api/me', auth, upload.single('avatar'), route(async (req, res) => {
-  const name = clean(req.body.name, 40) || req.user.username, bio = clean(req.body.bio, 160);
-  let avatar = req.user.avatar;
-  if (req.file) { const url = await saveImage(req.file); await storage.remove(avatar); avatar = url; }
-  await db.run('UPDATE users SET name = @name, bio = @bio, avatar = @avatar WHERE id = @id', { name, bio, avatar, id: req.user.id });
-  res.json({ ...req.user, onboarded: !!req.user.onboarded, name, bio, avatar });
+const LIFE = ['family', 'career', 'growth', 'creativity', 'fun', 'travel', 'knowledge', 'health'];
+const PEOPLE = ['kindness', 'humor', 'mind', 'honesty', 'courage', 'beauty', 'loyalty'];
+const RELS = ['', 'single', 'dating', 'engaged', 'married', 'complicated', 'searching', 'inlove'];
+const cleanTags = (v) => [...new Set(String(v || '').split(/[,\s]+/).map((t) => t.replace(/^#/, '').toLowerCase()).filter((t) => /^[\p{L}\d_]{1,30}$/u.test(t)))].slice(0, 8).join(',');
+function cleanSite(v) {
+  v = clean(v, 100); if (!v) return '';
+  if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
+  try { const u = new URL(v); return /^https?:$/.test(u.protocol) && u.hostname.includes('.') ? u.href.slice(0, 120) : ''; } catch { return ''; }
+}
+const profileUpload = upload.fields([{ name: 'avatar', maxCount: 1 }, { name: 'cover', maxCount: 1 }]);
+app.put('/api/me', auth, (req, res, next) => profileUpload(req, res, (e) => next(e)), route(async (req, res) => {
+  const b = req.body, f = req.files || {};
+  const name = clean(b.name, 40) || req.user.username, bio = clean(b.bio, 160);
+  let avatar = req.user.avatar, cover = req.user.cover;
+  if (f.avatar?.[0]) { const url = await saveImage(f.avatar[0]); await storage.remove(avatar); avatar = url; }
+  if (f.cover?.[0]) { const url = await saveImage(f.cover[0]); await storage.remove(cover); cover = url; }
+  else if (b.remove_cover === '1' && cover) { await storage.remove(cover); cover = null; }
+  const has = (k) => b[k] !== undefined; // поля, которых нет в запросе (мастер регистрации), не трогаем
+  const u = {
+    gender: has('gender') ? (['m', 'f'].includes(b.gender) ? b.gender : '') : req.user.gender,
+    relationship: has('relationship') ? (RELS.includes(b.relationship) ? b.relationship : '') : req.user.relationship,
+    partner: has('partner') ? clean(b.partner, 20).replace(/^@/, '').replace(/[^A-Za-z0-9_]/g, '') : req.user.partner,
+    website: has('website') ? cleanSite(b.website) : req.user.website,
+    telegram: has('telegram') ? (clean(b.telegram, 60).replace(/^(https?:\/\/)?(t\.me\/|telegram\.me\/)?@?/i, '').match(/^[A-Za-z0-9_]{5,32}$/)?.[0] || '') : req.user.telegram,
+    life_main: has('life_main') ? (LIFE.includes(b.life_main) ? b.life_main : '') : req.user.life_main,
+    people_main: has('people_main') ? (PEOPLE.includes(b.people_main) ? b.people_main : '') : req.user.people_main,
+    interests: has('interests') ? cleanTags(b.interests) : req.user.interests,
+  };
+  if (!u.relationship || ['single', 'searching'].includes(u.relationship)) u.partner = '';
+  await db.run(`UPDATE users SET name = @name, bio = @bio, avatar = @avatar, cover = @cover, gender = @gender, relationship = @relationship, partner = @partner,
+    website = @website, telegram = @telegram, life_main = @life_main, people_main = @people_main, interests = @interests WHERE id = @id`, { name, bio, avatar, cover, ...u, id: req.user.id });
+  res.json({ ...req.user, onboarded: !!req.user.onboarded, name, bio, avatar, cover, ...u });
 }));
 
 // ---------- уведомления ----------
@@ -186,16 +212,22 @@ async function notify(actor, userId, type, postId, text = '') {
     { u: userId, a: actor.id, t: type, p: postId, x: snippet, c: created_at });
   const post = postId ? await db.get('SELECT text, image FROM posts WHERE id = @p', { p: postId }) : null;
   const post_text = post ? post.text.slice(0, 90) : '', post_image = post ? post.image : null;
-  emit(userId, 'notification', { id, type, post_id: postId, text: snippet, post_text, post_image, created_at, is_read: 0, username: actor.username, name: actor.name, avatar: actor.avatar });
+  emit(userId, 'notification', { id, type, post_id: postId, text: snippet, post_text, post_image, created_at, is_read: 0, username: actor.username, name: actor.name, avatar: actor.avatar, gender: actor.gender || '' });
   push.notifyUser(userId, {
-    title: actor.name || actor.username, body: `${NOTE_PUSH[type] || ''}${snippet || post_text ? ': ' + (snippet || post_text) : ''}`,
+    title: actor.name || actor.username, body: `${noteVerb(type, actor.gender)}${snippet || post_text ? ': ' + (snippet || post_text) : ''}`,
     url: type === 'follow' ? '#/u/' + actor.username : '#/post/' + postId, tag: `n-${type}-${postId}`, icon: actor.avatar || '/icon-192.png',
   }).catch(() => {});
 }
-const NOTE_PUSH = { like: 'нравится ваш пост', comment: 'прокомментировал(а) ваш пост', reply: 'ответил(а) на ваш комментарий', follow: 'подписался(ась) на вас', mention: 'упомянул(а) вас', repost: 'сделал(а) репост вашего поста' };
+const NOTE_PUSH = {
+  like: ['нравится ваш пост'], comment: ['прокомментировал(а) ваш пост', 'прокомментировал ваш пост', 'прокомментировала ваш пост'],
+  reply: ['ответил(а) на ваш комментарий', 'ответил на ваш комментарий', 'ответила на ваш комментарий'],
+  follow: ['подписался(ась) на вас', 'подписался на вас', 'подписалась на вас'], mention: ['упомянул(а) вас', 'упомянул вас', 'упомянула вас'],
+  repost: ['сделал(а) репост вашего поста', 'сделал репост вашего поста', 'сделала репост вашего поста'],
+};
+const noteVerb = (type, g) => { const v = NOTE_PUSH[type]; return v ? (v.length === 1 ? v[0] : v[g === 'm' ? 1 : g === 'f' ? 2 : 0]) : ''; };
 
 const NOTE_FILTERS = { mentions: "('mention','reply','comment')", likes: "('like','repost')", follows: "('follow')" };
-const NOTE_COLS = 'n.id, n.type, n.post_id, n.text, n.created_at, n.is_read, u.username, u.name, u.avatar, p.text AS post_text, p.image AS post_image';
+const NOTE_COLS = 'n.id, n.type, n.post_id, n.text, n.created_at, n.is_read, u.username, u.name, u.avatar, p.text AS post_text, p.image AS post_image, u.gender';
 app.get('/api/notifications', auth, route(async (req, res) => {
   const f = NOTE_FILTERS[req.query.type], LIM = 30;
   const rows = await db.all(`SELECT ${NOTE_COLS} FROM notifications n JOIN users u ON u.id = n.actor_id LEFT JOIN posts p ON p.id = n.post_id AND n.post_id > 0
@@ -385,7 +417,7 @@ app.post('/api/posts', auth, limitWrites, upload.single('image'), route(async (r
 app.get('/api/posts/:id', auth, route(async (req, res) => {
   const post = await getPost(+req.params.id || 0, req.user.id);
   if (!post) throw new HttpError(404, 'Пост не найден');
-  const comments = await db.all(`SELECT c.id, c.parent_id, c.text, c.created_at, u.username, u.name, u.avatar
+  const comments = await db.all(`SELECT c.id, c.parent_id, c.text, c.image, c.created_at, u.username, u.name, u.avatar
     FROM comments c JOIN users u ON u.id = c.user_id WHERE c.post_id = @p ORDER BY c.id`, { p: post.id });
   res.json({ post, comments });
 }));
@@ -393,6 +425,7 @@ app.get('/api/posts/:id', auth, route(async (req, res) => {
 app.delete('/api/posts/:id', auth, route(async (req, res) => {
   const p = await db.get('SELECT id, image FROM posts WHERE id = @id AND user_id = @u', { id: +req.params.id || 0, u: req.user.id });
   if (!p) throw new HttpError(404, 'Пост не найден');
+  await db.run('UPDATE users SET pinned_post = NULL WHERE pinned_post = @id', { id: p.id });
   await db.run('DELETE FROM posts WHERE id = @id', { id: p.id });
   await db.run('DELETE FROM notifications WHERE post_id = @id', { id: p.id });
   await storage.remove(p.image);
@@ -409,9 +442,17 @@ app.post('/api/posts/:id/like', auth, limitWrites, route(async (req, res) => {
   res.json({ liked: !del.changes, likes: await count('SELECT CAST(COUNT(*) AS INTEGER) AS n FROM likes WHERE post_id = @p', { p: id }) });
 }));
 
-app.post('/api/posts/:id/comments', auth, limitWrites, route(async (req, res) => {
+// закрепить пост (свой или чужой) в своём профиле; закреплён может быть один
+app.post('/api/posts/:id/pin', auth, limitWrites, route(async (req, res) => {
+  const post = await origPost(req.params.id);
+  const pinned = req.user.pinned_post !== post.id;
+  await db.run('UPDATE users SET pinned_post = @p WHERE id = @u', { p: pinned ? post.id : null, u: req.user.id });
+  res.json({ pinned });
+}));
+
+app.post('/api/posts/:id/comments', auth, limitWrites, upload.single('image'), route(async (req, res) => {
   const text = clean(req.body.text, 300);
-  if (!text) throw new HttpError(400, 'Комментарий не может быть пустым');
+  if (!text && !req.file) throw new HttpError(400, 'Комментарий не может быть пустым');
   const post = await origPost(req.params.id), id = post.id;
   let parent = null, rootId = null;
   if (req.body.parent_id) {
@@ -419,10 +460,10 @@ app.post('/api/posts/:id/comments', auth, limitWrites, route(async (req, res) =>
     if (!parent) throw new HttpError(400, 'Комментарий, на который вы отвечаете, не найден');
     rootId = parent.parent_id || parent.id; // ветки в один уровень: ответ на ответ идёт в ту же ветку
   }
-  const created_at = now();
-  const cid = await db.insert('INSERT INTO comments (post_id, user_id, parent_id, text, created_at) VALUES (@p,@u,@r,@t,@c)',
-    { p: id, u: req.user.id, r: rootId, t: text, c: created_at });
-  const comment = { id: cid, parent_id: rootId, text, created_at, username: req.user.username, name: req.user.name, avatar: req.user.avatar };
+  const image = req.file ? await saveImage(req.file) : null, created_at = now();
+  const cid = await db.insert('INSERT INTO comments (post_id, user_id, parent_id, text, image, created_at) VALUES (@p,@u,@r,@t,@i,@c)',
+    { p: id, u: req.user.id, r: rootId, t: text, i: image, c: created_at });
+  const comment = { id: cid, parent_id: rootId, text, image, created_at, username: req.user.username, name: req.user.name, avatar: req.user.avatar };
   res.json(comment);
   (async () => { // один получатель — одно уведомление: ответ важнее комментария, комментарий важнее упоминания
     const who = new Map([[post.user_id, 'comment']]);
@@ -434,7 +475,7 @@ app.post('/api/posts/:id/comments', auth, limitWrites, route(async (req, res) =>
 
 // ---------- профили, подписки, поиск ----------
 app.get('/api/users/:username', auth, route(async (req, res) => {
-  const u = await db.get('SELECT id, username, name, bio, avatar, created_at FROM users WHERE lower(username) = lower(@u)', { u: req.params.username });
+  const u = await db.get('SELECT id, username, name, bio, avatar, created_at, gender, relationship, partner, website, telegram, life_main, people_main, interests, cover, pinned_post FROM users WHERE lower(username) = lower(@u)', { u: req.params.username });
   if (!u) throw new HttpError(404, 'Пользователь не найден');
   const before = cursorOf(req);
   const [posts, followers, following, isF, list] = await Promise.all([
@@ -444,7 +485,10 @@ app.get('/api/users/:username', auth, route(async (req, res) => {
     db.get('SELECT 1 AS x FROM follows WHERE follower_id = @me AND followee_id = @id', { me: req.user.id, id: u.id }),
     db.all(`${postSql({ where: 'WHERE p.user_id = @uid AND p.id < @before' })} LIMIT 20`, { me: req.user.id, uid: u.id, before }),
   ]);
-  res.json({ user: { ...u, posts, followers, following, isFollowing: !!isF }, posts: asPosts(list) });
+  const pinned = !req.query.before && u.pinned_post ? await getPost(u.pinned_post, req.user.id) : null;
+  const partner = u.partner ? await db.get('SELECT username, name FROM users WHERE lower(username) = lower(@p)', { p: u.partner }) : null;
+  const { pinned_post, ...pub } = u;
+  res.json({ user: { ...pub, partner: partner || (u.partner ? { username: '', name: u.partner } : null), posts, followers, following, isFollowing: !!isF }, posts: asPosts(list), pinned });
 }));
 
 app.post('/api/users/:username/follow', auth, limitWrites, route(async (req, res) => {
@@ -471,7 +515,7 @@ app.get('/api/search', auth, route(async (req, res) => {
   if (!q) return res.json({ users: [], posts: [] });
   const like = '%' + q.replace(/[\\%_]/g, '\\$&') + '%';
   res.json({
-    users: await db.all("SELECT username, name, avatar, bio FROM users WHERE lower(username) LIKE lower(@l) ESCAPE '\\' OR lower(name) LIKE lower(@l) ESCAPE '\\' LIMIT 10", { l: like }),
+    users: await db.all("SELECT username, name, avatar, bio FROM users WHERE lower(username) LIKE lower(@l) ESCAPE '\\' OR lower(name) LIKE lower(@l) ESCAPE '\\' OR lower(interests) LIKE lower(@l) ESCAPE '\\' LIMIT 20", { l: like }),
     posts: asPosts(await db.all(`${postSql({ where: "WHERE p.repost_of IS NULL AND lower(p.text) LIKE lower(@q) ESCAPE '\\'" })} LIMIT 30`, { me: req.user.id, q: like })),
   });
 }));
@@ -501,12 +545,15 @@ app.get('/api/conversations', auth, route(async (req, res) => {
 
 app.get('/api/messages/:username', auth, route(async (req, res) => {
   const u = await userByName(req.params.username);
-  const rows = await db.all(`SELECT id, sender_id, text, image, created_at, is_read FROM messages WHERE id < @before AND ${PAIR} ORDER BY id DESC LIMIT 30`,
+  const rows = await db.all(`SELECT m.id, m.sender_id, m.text, m.image, m.created_at, m.is_read, m.reply_to, r.text AS rtext, r.image AS rimage, r.sender_id AS rsender
+    FROM messages m LEFT JOIN messages r ON r.id = m.reply_to
+    WHERE m.id < @before AND ((m.sender_id = @me AND m.recipient_id = @u) OR (m.sender_id = @u AND m.recipient_id = @me)) ORDER BY m.id DESC LIMIT 30`,
     { me: req.user.id, u: u.id, before: cursorOf(req) });
   if (!req.query.before) await markRead(req.user, u);
   res.json({
     user: { username: u.username, name: u.name, avatar: u.avatar },
-    messages: rows.reverse().map((m) => ({ id: m.id, text: m.text, image: m.image, created_at: m.created_at, mine: m.sender_id === req.user.id, is_read: m.sender_id === req.user.id ? +m.is_read : 1 })),
+    messages: rows.reverse().map((m) => ({ id: m.id, text: m.text, image: m.image, created_at: m.created_at, mine: m.sender_id === req.user.id, is_read: m.sender_id === req.user.id ? +m.is_read : 1,
+      reply: m.reply_to && m.rsender ? { id: m.reply_to, text: m.rtext, image: m.rimage, mine: m.rsender === req.user.id } : null })),
     more: rows.length === 30,
   });
 }));
@@ -521,10 +568,21 @@ app.post('/api/messages/:username', auth, limitWrites, upload.single('image'), r
   if (u.id === req.user.id) throw new HttpError(400, 'Нельзя написать самому себе');
   if (!text && !req.file) throw new HttpError(400, 'Сообщение не может быть пустым');
   const image = req.file ? await saveImage(req.file) : null, created_at = now();
-  const id = await db.insert('INSERT INTO messages (sender_id, recipient_id, text, image, created_at) VALUES (@s,@r,@t,@i,@c)', { s: req.user.id, r: u.id, t: text, i: image, c: created_at });
-  emit(u.id, 'message', { id, text, image, created_at, username: req.user.username, name: req.user.name, avatar: req.user.avatar });
+  const rep = +req.body.reply_to ? await db.get('SELECT id, text, image, sender_id FROM messages WHERE id = @i AND ((sender_id = @a AND recipient_id = @b) OR (sender_id = @b AND recipient_id = @a))', { i: +req.body.reply_to, a: req.user.id, b: u.id }) : null;
+  const id = await db.insert('INSERT INTO messages (sender_id, recipient_id, text, image, reply_to, created_at) VALUES (@s,@r,@t,@i,@rt,@c)', { s: req.user.id, r: u.id, t: text, i: image, rt: rep ? rep.id : null, c: created_at });
+  const reply = rep ? { id: rep.id, text: rep.text, image: rep.image, mine: rep.sender_id === req.user.id } : null;
+  emit(u.id, 'message', { id, text, image, reply: rep ? { ...reply, mine: !reply.mine } : null, created_at, username: req.user.username, name: req.user.name, avatar: req.user.avatar });
   push.notifyUser(u.id, { title: req.user.name || req.user.username, body: text || '📷 Фото', url: '#/messages/' + req.user.username, tag: 'msg-' + req.user.username, icon: req.user.avatar || '/icon-192.png' }).catch(() => {});
-  res.json({ id, text, image, created_at, mine: true, is_read: 0 });
+  res.json({ id, text, image, reply, created_at, mine: true, is_read: 0 });
+}));
+
+app.delete('/api/messages/:id', auth, route(async (req, res) => {
+  const m = await db.get('SELECT id, image, recipient_id FROM messages WHERE id = @i AND sender_id = @u', { i: +req.params.id || 0, u: req.user.id });
+  if (!m) throw new HttpError(404, 'Сообщение не найдено');
+  await db.run('DELETE FROM messages WHERE id = @i', { i: m.id });
+  await storage.remove(m.image);
+  emit(m.recipient_id, 'msgdel', { id: m.id });
+  res.json({ ok: true });
 }));
 
 // ---------- служебное и статика ----------

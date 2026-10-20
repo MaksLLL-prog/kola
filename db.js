@@ -39,6 +39,18 @@ const COLUMNS = [
   ['posts', 'repost_of', 'INTEGER REFERENCES posts(id) ON DELETE CASCADE'],
   ['users', 'onboarded', 'INTEGER NOT NULL DEFAULT 1'], // у старых аккаунтов онбординг считается пройденным
   ['messages', 'image', 'TEXT'], // фото в личных сообщениях
+  ['comments', 'image', 'TEXT'], // картинка или GIF в комментарии
+  ['messages', 'reply_to', 'INTEGER'], // ответ на сообщение
+  ['users', 'gender', "TEXT NOT NULL DEFAULT ''"], // m / f / ''
+  ['users', 'relationship', "TEXT NOT NULL DEFAULT ''"],
+  ['users', 'partner', "TEXT NOT NULL DEFAULT ''"], // username партнёра
+  ['users', 'website', "TEXT NOT NULL DEFAULT ''"],
+  ['users', 'telegram', "TEXT NOT NULL DEFAULT ''"],
+  ['users', 'life_main', "TEXT NOT NULL DEFAULT ''"],
+  ['users', 'people_main', "TEXT NOT NULL DEFAULT ''"],
+  ['users', 'interests', "TEXT NOT NULL DEFAULT ''"], // через запятую
+  ['users', 'cover', 'TEXT'], // нарисованная шапка профиля (PNG)
+  ['users', 'pinned_post', 'INTEGER'],
 ];
 const AFTER = [
   'CREATE INDEX IF NOT EXISTS posts_repost ON posts (repost_of)',
