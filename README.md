@@ -59,7 +59,7 @@ Caddy сам получит сертификат Let's Encrypt. Состав: `a
 server.js    API, SSE, уведомления, сообщения
 db.js        один интерфейс для SQLite и Postgres
 storage.js   картинки: диск или S3
-public/      index.html, style.css, app.js
+public/      index.html, style.css, app.js и dd
 ```
 
 Уведомления идут по SSE (`/api/stream`), вход в поток — по одноразовому билету, JWT в адрес не попадает. Тип загружаемых картинок проверяется по содержимому файла.
