@@ -8,10 +8,12 @@ let io = null, msgHook = null, readHook = null, noteHook = null; // io — бе�
 const feedCache = {}; // последняя загруженная лента: при возврате на экран показываем сразу, а свежее подгружаем следом
 
 // тема: тёмная по умолчанию, светлая — по выбору (хранится в браузере)
-const getTheme = () => { try { return localStorage.getItem('kolo_theme') || 'dark'; } catch { return 'dark'; } };
-const applyTheme = (t) => { document.documentElement.dataset.theme = t; document.querySelector('meta[name=theme-color]')?.setAttribute('content', t === 'light' ? '#F4F5F8' : '#080C10'); };
-applyTheme(getTheme());
-function toggleTheme() { const t = getTheme() === 'light' ? 'dark' : 'light'; try { localStorage.setItem('kolo_theme', t); } catch {} applyTheme(t); const b = document.getElementById('themebtn2'); if (b) b.lastChild.textContent = t === 'light' ? 'Тёмная тема' : 'Светлая тема'; }
+const getTheme = () => { try { return localStorage.getItem('kolo_theme') || 'system'; } catch { return 'system'; } };
+const effTheme = () => { const t = getTheme(); return t === 'system' ? (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : t; };
+const applyTheme = () => { const t = effTheme(); document.documentElement.dataset.theme = t; document.querySelector('meta[name=theme-color]')?.setAttribute('content', t === 'light' ? '#F4F5F8' : '#080C10'); };
+applyTheme();
+matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', () => { if (getTheme() === 'system') applyTheme(); });
+function toggleTheme() { const t = effTheme() === 'light' ? 'dark' : 'light'; try { localStorage.setItem('kolo_theme', t); } catch {} applyTheme(); const b = document.getElementById('themebtn2'); if (b) b.lastChild.textContent = t === 'light' ? 'Тёмная тема' : 'Светлая тема'; }
 
 // ---------- утилиты ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -131,7 +133,7 @@ function ensureShell() {
       ${a('bm', '#/bookmarks', 'Закладки', I.bookmark, 'dsk')}
       <a data-k="notes" href="#/notifications" class="dsk">${I.bell}<span>Уведомления</span><i class="badge" id="badge" hidden></i></a>
       <a data-k="me" href="#/u/${esc(me.username)}">${I.user}<span>Профиль</span></a>
-      <div class="navfoot dsk"><a href="#/new">Новая запись</a><button type="button" id="themebtn2"><span hidden></span>${getTheme() === 'light' ? 'Тёмная тема' : 'Светлая тема'}</button><button type="button" id="logout">Выйти</button></div>
+      <div class="navfoot dsk"><a href="#/new">Новая запись</a><button type="button" id="themebtn2"><span hidden></span>${effTheme() === 'light' ? 'Тёмная тема' : 'Светлая тема'}</button><button type="button" id="logout">Выйти</button></div>
     </nav>
     <div class="col">
       <header class="head" id="head"></header>
@@ -290,13 +292,15 @@ const seg = (items, cur) => `<nav class="seg" role="tablist">${items.map(([k, h,
 
 // ---------- экраны ----------
 function authView() {
-  app.innerHTML = `<div class="authwrap"><form class="sheet authbox" id="auth">
-    <div class="authlogo">${LOGO}<span>Kolo</span></div><h1>С возвращением</h1><p>Войдите, чтобы увидеть ленту.</p>
-    <label class="field"><span>Имя пользователя</span><input name="username" required maxlength="20" autocomplete="username" autocapitalize="none"></label>
-    <label class="field"><span>Пароль</span><input name="password" type="password" required autocomplete="current-password"></label>
+  app.innerHTML = `<div class="authwrap"><div class="authglow"></div><form class="sheet authbox" id="auth">
+    <div class="authlogo">${LOGO}<span>Kolo</span></div><h1>С возвращением</h1><p>Войдите, чтобы вернуться в свой круг.</p>
+    <label class="field"><span>Имя пользователя</span><input name="username" required maxlength="20" autocomplete="username" autocapitalize="none" placeholder="например, anna"></label>
+    <label class="field"><span>Пароль</span><span class="pw"><input name="password" type="password" required autocomplete="current-password" placeholder="Ваш пароль"><button type="button" class="link" id="pwshow">Показать</button></span></label>
     <p class="err" id="err" role="alert"></p>
     <button class="btn" type="submit">Войти</button>
-    <div class="switch">Нет аккаунта? <a href="#/register">Создать</a></div></form></div>`;
+    <div class="switch">Нет аккаунта? <a href="#/register">Создать</a></div>
+    <div class="authfoot">Kolo — твой круг общения</div></form></div>`;
+  document.getElementById('pwshow').onclick = (e) => { const i = document.querySelector('#auth [name=password]'), show = i.type === 'password'; i.type = show ? 'text' : 'password'; e.target.textContent = show ? 'Скрыть' : 'Показать'; };
   document.getElementById('auth').onsubmit = async (e) => {
     e.preventDefault();
     try {
@@ -310,7 +314,7 @@ function authView() {
 // Пока онбординг не завершён, роутер возвращает человека на нужный шаг (флаг onboarded на сервере).
 function wizardShell(step, inner) {
   const titles = ['Аккаунт', 'Профиль', 'Подписки'];
-  app.innerHTML = `<div class="authwrap"><div class="sheet authbox wiz">
+  app.innerHTML = `<div class="authwrap"><div class="authglow"></div><div class="sheet authbox wiz">
     <div class="authlogo">${LOGO}<span>Kolo</span></div><ol class="steps" aria-label="Шаги регистрации">${titles.map((t, i) => `<li class="${i + 1 < step ? 'done' : i + 1 === step ? 'cur' : ''}" ${i + 1 === step ? 'aria-current="step"' : ''}><i>${i + 1 < step ? '✓' : i + 1}</i><span>${t}</span></li>`).join('')}</ol>
     ${inner}</div></div>`;
 }
@@ -466,7 +470,7 @@ async function profileView(username) {
         ${u.bio ? `<p class="bio">${linkify(u.bio)}</p>` : ''}
         <div class="pcbtns">${own ? '<button class="btn line" id="edit">Редактировать</button>' : `<button class="btn ${u.isFollowing ? 'line' : ''}" data-follow="${esc(u.username)}" id="fbtn">${u.isFollowing ? 'Вы читаете' : 'Читать'}</button><a class="btn line" href="#/messages/${esc(u.username)}">Написать</a>`}</div></div></div>
     <div class="stats">${st(u.posts, pl(u.posts, 'запись', 'записи', 'записей'))}${st(u.followers, pl(u.followers, 'читатель', 'читателя', 'читателей'), 'fcount')}${st(u.following, 'в подписках')}</div></section>
-    ${own ? `<section class="card menu">${row('#/bookmarks', I.bookmark, 'Закладки')}${row('#/notifications', I.bell, 'Уведомления')}${row('themebtn', getTheme() === 'light' ? I.moon : I.sun, getTheme() === 'light' ? 'Тёмная тема' : 'Светлая тема')}${row('logout2', I.out, 'Выйти')}</section>` : ''}
+    ${own ? `<section class="card menu">${row('#/bookmarks', I.bookmark, 'Закладки')}${row('#/notifications', I.bell, 'Уведомления')}${row('themebtn', effTheme() === 'light' ? I.moon : I.sun, effTheme() === 'light' ? 'Тёмная тема' : 'Светлая тема')}${row('logout2', I.out, 'Выйти')}</section>` : ''}
     <div class="list" id="feed">${feedList(data.posts, emptyBox('Постов пока нет', own ? 'Опубликуйте первый.' : ''))}</div>`;
   infinite(document.getElementById('feed'), data.posts, (n, last) => api(`/users/${encodeURIComponent(username)}?before=${lastCur(last)}`).then((d) => d.posts));
   if (own) {
@@ -692,10 +696,17 @@ async function threadView(username) {
   const box = document.getElementById('msgs'), f = document.getElementById('mform'), ta = f.text, sendBtn = f.querySelector('.send'), prev = document.getElementById('mprev'), fileIn = document.getElementById('mfile');
 
   const tick = (m) => m.mine ? `<i class="tick ${m.is_read ? 'read' : ''}" aria-label="${m.is_read ? 'Прочитано' : 'Отправлено'}">${m.is_read ? I.checks : I.check}</i>` : '';
-  const msgHTML = (m, st = '') => `<div class="msg ${m.mine ? 'mine' : ''} ${st}" data-id="${m.id || ''}">
+  const msgHTML = (m, st = '') => `<div class="msg ${m.mine ? 'mine' : ''} ${st}" data-id="${m.id || ''}" data-t="${m.created_at || ''}">
     ${m.image ? `<img class="mimg" data-zoom src="${esc(m.image)}" alt="Фото" decoding="async">` : ''}${m.text ? `<p>${linkify(m.text)}</p>` : ''}
     <span class="mmeta">${timeOf(m.created_at)}${tick(m)}</span></div>`;
   const dayHTML = (m) => { const d = dayOf(m.created_at); if (d === lastDay) return ''; lastDay = d; return `<div class="day">${d}</div>`; };
+  const regroup = () => { // подряд идущие сообщения одного автора (до 5 минут): плотнее, время только у последнего
+    const ms = [...box.querySelectorAll('.msg')];
+    ms.forEach((el, i) => {
+      const p = ms[i - 1], n = ms[i + 1], same = (x, y) => x && y && x.classList.contains('mine') === y.classList.contains('mine') && Math.abs(new Date(y.dataset.t) - new Date(x.dataset.t)) < 3e5 && x.nextElementSibling === y;
+      el.classList.toggle('cont', !!same(p, el)); el.classList.toggle('nometa', !!same(el, n));
+    });
+  };
   const nearBottom = () => box.scrollHeight - box.scrollTop - box.clientHeight < 120;
   const toBottom = () => { box.scrollTop = box.scrollHeight; };
   box.addEventListener('scroll', () => { stick = nearBottom(); }, { passive: true });
@@ -706,6 +717,7 @@ async function threadView(username) {
     let out = more ? '<div class="older" id="older">Загрузка…</div>' : '';
     for (const m of list) out += dayHTML(m) + msgHTML(m);
     box.innerHTML = out || '<div class="empty"><b>Начните разговор</b>Напишите первое сообщение или отправьте фото.</div>';
+    regroup();
     if (mode === 'bottom') toBottom(); else box.scrollTop = prevTop + (box.scrollHeight - prevH);
     olderIo?.disconnect(); olderIo = null;
     const older = document.getElementById('older');
@@ -714,6 +726,7 @@ async function threadView(username) {
   const append = (m, st = '') => { // новое сообщение добавляем в конец, не перерисовывая весь диалог
     box.querySelector('.empty')?.remove();
     box.insertAdjacentHTML('beforeend', dayHTML(m) + msgHTML(m, st));
+    regroup();
     return box.lastElementChild;
   };
   const loadOlder = async () => {

@@ -1,5 +1,5 @@
 // Service worker Kolo: push-уведомления и быстрая загрузка (кэш оболочки приложения).
-const CACHE = 'kolo-v5';
+const CACHE = 'kolo-v6';
 const SHELL = ['/', '/style.css', '/app.js', '/icon-192.png'];
 
 self.addEventListener('install', (e) => {
