@@ -51,6 +51,7 @@ const COLUMNS = [
   ['users', 'interests', "TEXT NOT NULL DEFAULT ''"], // через запятую
   ['users', 'cover', 'TEXT'], // нарисованная шапка профиля (PNG)
   ['users', 'pinned_post', 'INTEGER'],
+  ['users', 'last_seen', 'TEXT'], // последний визит (для «в сети»)
 ];
 const AFTER = [
   'CREATE INDEX IF NOT EXISTS posts_repost ON posts (repost_of)',

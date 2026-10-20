@@ -81,7 +81,7 @@ const limitWrites = limiter(120, 60 * 1000, 'Слишком часто. Подо
 const limitCheck = limiter(60, 60 * 1000, 'Слишком часто. Подождите минуту');
 
 // ---------- картинки ----------
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 1 } });
 function sniff(b) { // тип определяем по содержимому, а не по заголовку от клиента
   if (b.length < 12) return null;
   if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return '.jpg';
@@ -93,6 +93,7 @@ function sniff(b) { // тип определяем по содержимому, 
 async function saveImage(file) {
   const ext = sniff(file.buffer);
   if (!ext) throw new HttpError(400, 'Допустимы только JPG, PNG, WebP и GIF');
+  if (ext !== '.gif' && file.buffer.length > 5 * 1024 * 1024) throw new HttpError(400, 'Файл больше 5 МБ (для GIF лимит 15 МБ)');
   return storage.save(file.buffer, ext);
 }
 
@@ -111,8 +112,17 @@ const auth = route(async (req, res, next) => {
   try { id = jwt.verify((req.get('Authorization') || '').replace(/^Bearer /, ''), SECRET).id; } catch { throw new HttpError(401, 'Нужно войти в аккаунт'); }
   const user = await db.get('SELECT id, username, name, bio, avatar, onboarded, gender, relationship, partner, website, telegram, life_main, people_main, interests, cover, pinned_post FROM users WHERE id = @id', { id });
   if (!user) throw new HttpError(401, 'Нужно войти в аккаунт');
+  touchSeen(user.id);
   req.user = user; next();
 });
+const touched = new Map();
+function touchSeen(id) { // не чаще раза в минуту
+  const t = Date.now();
+  if (t - (touched.get(id) || 0) < 60000) return;
+  touched.set(id, t);
+  db.run('UPDATE users SET last_seen = @t WHERE id = @id', { t: new Date(t).toISOString(), id }).catch(() => {});
+}
+const isOnline = (id, last_seen) => clients.has(id) || (!!last_seen && Date.now() - new Date(last_seen).getTime() < 120000);
 
 const clean = (s, max) => String(s ?? '').replace(/\r\n/g, '\n').trim().slice(0, max);
 const now = () => new Date().toISOString();
@@ -286,7 +296,7 @@ app.get('/api/stream', (req, res) => {
   if (set.size >= 5) { const old = set.values().next().value; old.end(); set.delete(old); }
   set.add(res);
   const beat = setInterval(() => res.write('event: hb\ndata: 1\n\n'), 15000);
-  req.on('close', () => { clearInterval(beat); set.delete(res); if (!set.size) clients.delete(t.id); });
+  req.on('close', () => { clearInterval(beat); set.delete(res); if (!set.size) { clients.delete(t.id); touched.set(t.id, Date.now()); db.run('UPDATE users SET last_seen = @t WHERE id = @id', { t: now(), id: t.id }).catch(() => {}); } });
 });
 
 // ---------- посты ----------
@@ -474,8 +484,23 @@ app.post('/api/posts/:id/comments', auth, limitWrites, upload.single('image'), r
 }));
 
 // ---------- профили, подписки, поиск ----------
+app.get('/api/users/:username/photos', auth, route(async (req, res) => {
+  const u = await db.get('SELECT id, username, name FROM users WHERE lower(username) = lower(@u)', { u: req.params.username });
+  if (!u) throw new HttpError(404, 'Пользователь не найден');
+  const [total, photos] = await Promise.all([
+    count('SELECT CAST(COUNT(*) AS INTEGER) AS n FROM posts WHERE user_id = @id AND repost_of IS NULL AND image IS NOT NULL', { id: u.id }),
+    db.all('SELECT id, image FROM posts WHERE user_id = @id AND repost_of IS NULL AND image IS NOT NULL AND id < @before ORDER BY id DESC LIMIT 30', { id: u.id, before: cursorOf(req) }),
+  ]);
+  res.json({ user: { username: u.username, name: u.name }, total, photos });
+}));
+
+app.get('/api/presence/:username', auth, route(async (req, res) => {
+  const u = await db.get('SELECT id, gender, last_seen FROM users WHERE lower(username) = lower(@u)', { u: req.params.username });
+  if (!u) throw new HttpError(404, 'Пользователь не найден');
+  res.json({ online: isOnline(u.id, u.last_seen), last_seen: u.last_seen, gender: u.gender });
+}));
 app.get('/api/users/:username', auth, route(async (req, res) => {
-  const u = await db.get('SELECT id, username, name, bio, avatar, created_at, gender, relationship, partner, website, telegram, life_main, people_main, interests, cover, pinned_post FROM users WHERE lower(username) = lower(@u)', { u: req.params.username });
+  const u = await db.get('SELECT id, username, name, bio, avatar, created_at, gender, relationship, partner, website, telegram, life_main, people_main, interests, cover, pinned_post, last_seen FROM users WHERE lower(username) = lower(@u)', { u: req.params.username });
   if (!u) throw new HttpError(404, 'Пользователь не найден');
   const before = cursorOf(req);
   const [posts, followers, following, isF, list] = await Promise.all([
@@ -486,9 +511,13 @@ app.get('/api/users/:username', auth, route(async (req, res) => {
     db.all(`${postSql({ where: 'WHERE p.user_id = @uid AND p.id < @before' })} LIMIT 20`, { me: req.user.id, uid: u.id, before }),
   ]);
   const pinned = !req.query.before && u.pinned_post ? await getPost(u.pinned_post, req.user.id) : null;
-  const partner = u.partner ? await db.get('SELECT username, name FROM users WHERE lower(username) = lower(@p)', { p: u.partner }) : null;
+  const partner = u.partner ? await db.get('SELECT username, name, avatar FROM users WHERE lower(username) = lower(@p)', { p: u.partner }) : null;
+  const [pcount, pitems] = await Promise.all([
+    count('SELECT CAST(COUNT(*) AS INTEGER) AS n FROM posts WHERE user_id = @id AND repost_of IS NULL AND image IS NOT NULL', { id: u.id }),
+    db.all('SELECT id, image FROM posts WHERE user_id = @id AND repost_of IS NULL AND image IS NOT NULL ORDER BY id DESC LIMIT 4', { id: u.id }),
+  ]);
   const { pinned_post, ...pub } = u;
-  res.json({ user: { ...pub, partner: partner || (u.partner ? { username: '', name: u.partner } : null), posts, followers, following, isFollowing: !!isF }, posts: asPosts(list), pinned });
+  res.json({ photos: { count: pcount, items: pitems }, user: { ...pub, online: isOnline(u.id, u.last_seen), partner: partner || (u.partner ? { username: '', name: u.partner } : null), posts, followers, following, isFollowing: !!isF }, posts: asPosts(list), pinned });
 }));
 
 app.post('/api/users/:username/follow', auth, limitWrites, route(async (req, res) => {
@@ -522,7 +551,7 @@ app.get('/api/search', auth, route(async (req, res) => {
 
 // ---------- личные сообщения ----------
 const userByName = async (name) => {
-  const u = await db.get('SELECT id, username, name, avatar FROM users WHERE lower(username) = lower(@u)', { u: String(name) });
+  const u = await db.get('SELECT id, username, name, avatar, gender, last_seen FROM users WHERE lower(username) = lower(@u)', { u: String(name) });
   if (!u) throw new HttpError(404, 'Пользователь не найден');
   return u;
 };
@@ -551,7 +580,7 @@ app.get('/api/messages/:username', auth, route(async (req, res) => {
     { me: req.user.id, u: u.id, before: cursorOf(req) });
   if (!req.query.before) await markRead(req.user, u);
   res.json({
-    user: { username: u.username, name: u.name, avatar: u.avatar },
+    user: { username: u.username, name: u.name, avatar: u.avatar, gender: u.gender, last_seen: u.last_seen, online: isOnline(u.id, u.last_seen) },
     messages: rows.reverse().map((m) => ({ id: m.id, text: m.text, image: m.image, created_at: m.created_at, mine: m.sender_id === req.user.id, is_read: m.sender_id === req.user.id ? +m.is_read : 1,
       reply: m.reply_to && m.rsender ? { id: m.reply_to, text: m.rtext, image: m.rimage, mine: m.rsender === req.user.id } : null })),
     more: rows.length === 30,
@@ -593,7 +622,7 @@ app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h' }));
 app.use('/api', (req, res) => res.status(404).json({ error: 'Не найдено' }));
 app.use((err, req, res, next) => {
   if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
-  if (err instanceof multer.MulterError) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'Файл больше 5 МБ' : 'Не удалось загрузить файл' });
+  if (err instanceof multer.MulterError) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'Файл больше 15 МБ' : 'Не удалось загрузить файл' });
   console.error(err);
   res.status(500).json({ error: 'Ошибка сервера. Попробуйте ещё раз' });
 });

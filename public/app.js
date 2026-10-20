@@ -31,6 +31,17 @@ function ago(iso) {
   if (a < 604800) return rtf.format(Math.round(sec / 86400), 'day');
   return new Date(iso).toLocaleDateString('ru', { day: 'numeric', month: 'short' });
 }
+function seenText(u) { // «в сети» / «был(а) в сети сегодня в 14:05»
+  if (u.online) return 'в сети';
+  if (!u.last_seen) return 'не в сети';
+  const d = new Date(u.last_seen), now = new Date(), mins = Math.round((now - d) / 60000);
+  const t = d.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' }), same = (x, y) => x.toDateString() === y.toDateString();
+  const verb = u.gender === 'f' ? 'была' : u.gender === 'm' ? 'был' : 'был(а)';
+  const when = mins < 60 ? `${Math.max(mins, 1)} мин. назад` : same(d, now) ? `сегодня в ${t}` : same(d, new Date(now - 864e5)) ? `вчера в ${t}` : `${d.toLocaleDateString('ru', { day: 'numeric', month: 'long' })} в ${t}`;
+  return `${verb} в сети ${when}`;
+}
+const clipImage = (e) => { const cd = e.clipboardData; if (!cd) return null; const f = [...(cd.files || [])].find((x) => x.type.startsWith('image/')); if (f) return f; for (const it of cd.items || []) if (it.kind === 'file' && it.type.startsWith('image/')) return it.getAsFile(); return null; };
+const dropImage = (e) => [...(e.dataTransfer?.files || [])].find((x) => x.type.startsWith('image/') || /\.(gif|png|jpe?g|webp)$/i.test(x.name)) || null;
 const ic = (d, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
 const I = {
   home: ic('<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>'),
@@ -55,6 +66,7 @@ const I = {
   more: ic('<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>'),
   link: ic('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
   reply: ic('<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v3"/>'),
+  gear: ic('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
   clip: ic('<path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8"/>'),
   edit: ic('<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'),
   at: ic('<circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/>'),
@@ -113,9 +125,10 @@ async function prepImage(file, max = 1600) {
 }
 async function pickedImage(file) { // проверка и подготовка выбранной картинки; null — отказ (уже показан тост)
   if (!file) return null;
-  if (!/^image\//.test(file.type)) { toast('Нужна картинка: JPG, PNG, WebP или GIF'); return null; }
-  const f = await prepImage(file);
-  if (f.size > 5 * 1024 * 1024) { toast('Файл больше 5 МБ'); return null; }
+  const type = file.type || (/\.gif$/i.test(file.name || '') ? 'image/gif' : ''); // некоторые телефоны не сообщают тип GIF
+  if (!/^image\//.test(type)) { toast('Нужна картинка: JPG, PNG, WebP или GIF'); return null; }
+  const f = await prepImage(file), gif = type === 'image/gif';
+  if (f.size > (gif ? 15 : 5) * 1024 * 1024) { toast(gif ? 'GIF больше 15 МБ' : 'Файл больше 5 МБ'); return null; }
   return f;
 }
 
@@ -267,8 +280,10 @@ function bindComposer(onPost) {
     if (x) prev.querySelector('img').src = URL.createObjectURL(x); else pick.value = '';
   };
   pick.onchange = async () => { const x = await pickedImage(pick.files[0]); if (x) setFile(x); else pick.value = ''; };
-  ta.addEventListener('paste', async (e) => { const it = [...(e.clipboardData?.files || [])].find((x) => x.type.startsWith('image/')); if (it) { e.preventDefault(); const x = await pickedImage(it); if (x) setFile(x); } });
+  ta.addEventListener('paste', async (e) => { const it = clipImage(e); if (it) { e.preventDefault(); const x = await pickedImage(it); if (x) setFile(x); } });
   document.getElementById('unpick').onclick = () => setFile(null);
+  f.addEventListener('dragover', (e) => e.preventDefault());
+  f.addEventListener('drop', async (e) => { const it = dropImage(e); if (!it) return; e.preventDefault(); const x = await pickedImage(it); if (x) setFile(x); });
   f.onsubmit = async (e) => {
     e.preventDefault();
     if (!ta.value.trim() && !file) return toast('Напишите текст или добавьте фото');
@@ -480,50 +495,86 @@ function newPostView() {
 async function profileView(username) {
   const v = view, own = username.toLowerCase() === me.username.toLowerCase();
   const main = page({ key: own ? 'me' : '', title: titleOf(own ? 'Профиль' : '&nbsp;'), back: !own, mode: own ? 'prof' : '' });
-  main.innerHTML = `<div class="card pcard"><div class="pctop"><span class="av xl" style="--h:${hue(username)}"></span></div></div><div class="list">${skel(2)}</div>`;
+  main.innerHTML = `<div class="card pcard"><div class="pcbar"><span class="av xl" style="--h:${hue(username)}"></span></div></div><div class="list">${skel(2)}</div>`;
   let data;
   try { data = await api('/users/' + encodeURIComponent(username)); }
   catch (e) { return void (v === view && (main.innerHTML = errBox(e))); }
   if (v !== view) return;
-  const u = data.user, pinned = data.pinned;
+  const u = data.user, pinned = data.pinned, ph = data.photos || { count: 0, items: [] };
   document.title = baseTitle = `${u.name || u.username} — Kolo`;
   if (!own) document.querySelector('#head .ht').innerHTML = titleOf(esc(u.name || u.username));
-  const row = (id, icon, label, extra = '') => `<${id.startsWith('#') ? 'a href="' + id + '"' : 'button type="button" id="' + id + '"'} class="mrow2">${icon}<span>${label}</span>${extra}</${id.startsWith('#') ? 'a' : 'button'}>`;
   const st = (n, label, id = '') => `<div><b${id ? ` id="${id}"` : ''}>${n}</b><span>${label}</span></div>`;
   const cover = u.cover
     ? `<div class="pcover"><img src="${esc(u.cover)}" alt="Шапка профиля" data-zoom decoding="async">${own ? `<button type="button" class="btn sm line pcedit" id="drawcover">${I.edit}Рисовать</button>` : ''}</div>`
     : own ? `<button type="button" class="pcover cta" id="drawcover">${I.edit}<b>Нарисуйте свою шапку</b><span>Кисть, неон, симметрия — прямо здесь</span></button>` : '';
-  const facts = [];
-  if (u.relationship) facts.push(`<span class="fact">${I.heart}<span>${relLabel(u.relationship, u.gender)}${u.partner ? ' · ' + (u.partner.username ? `<a href="#/u/${esc(u.partner.username)}">${esc(u.partner.name || u.partner.username)}</a>` : esc(u.partner.name)) : ''}</span></span>`);
-  if (u.website) facts.push(`<a class="fact" href="${esc(u.website)}" target="_blank" rel="noopener noreferrer nofollow">${I.link}<span>${esc(u.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))}</span></a>`);
-  if (u.telegram) facts.push(`<a class="fact" href="https://t.me/${esc(u.telegram)}" target="_blank" rel="noopener noreferrer">${I.send}<span>@${esc(u.telegram)}</span></a>`);
-  if (LIFE_L[u.life_main]) facts.push(`<span class="fact"><small>Главное в жизни</small><span>${LIFE_L[u.life_main]}</span></span>`);
-  if (PEOPLE_L[u.people_main]) facts.push(`<span class="fact"><small>Главное в людях</small><span>${PEOPLE_L[u.people_main]}</span></span>`);
+  const partner = !u.partner ? '' : u.partner.username
+    ? `<a class="pchip" href="#/u/${esc(u.partner.username)}">${avatar(u.partner, 'xs')}<span>${esc(u.partner.name || u.partner.username)}</span></a>`
+    : `<span class="pchip off" title="Этого человека нет в Kolo">@${esc(u.partner.name)}</span>`;
+  const rows = [], add = (k, val) => val && rows.push(`<div><dt>${k}</dt><dd>${val}</dd></div>`);
+  add('Семейное положение', u.relationship && `<span>${relLabel(u.relationship, u.gender)}</span>${partner}`);
+  add('Сайт', u.website && `<a href="${esc(u.website)}" target="_blank" rel="noopener noreferrer nofollow">${esc(u.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))}</a>`);
+  add('Telegram', u.telegram && `<a href="https://t.me/${esc(u.telegram)}" target="_blank" rel="noopener noreferrer">@${esc(u.telegram)}</a>`);
+  add('Главное в жизни', LIFE_L[u.life_main]);
+  add('Главное в людях', PEOPLE_L[u.people_main]);
   const tags = (u.interests || '').split(',').filter(Boolean);
-  const pfacts = facts.length || tags.length ? `<div class="pfacts">${facts.join('')}${tags.length ? `<div class="chips">${tags.map((t) => `<a class="tagchip" href="#/search/${encodeURIComponent(t)}">#${esc(t)}</a>`).join('')}</div>` : ''}</div>` : '';
+  add('Интересы', tags.length && tags.map((t) => `<a class="tagchip" href="#/search/${encodeURIComponent(t)}">#${esc(t)}</a>`).join(''));
+  const photos = ph.count || own ? `<section class="card pphotos"><div class="pph-head"><a href="#/photos/${esc(u.username)}"><b>Фотографии</b> <span class="muted">${ph.count || ''}</span></a>${own ? '<button type="button" class="link" id="addphoto">Добавить фотографию</button>' : ''}</div>${ph.count ? `<div class="pph-grid">${ph.items.map((p) => `<img data-zoom src="${esc(p.image)}" alt="Фото" loading="lazy" decoding="async">`).join('')}</div>` : '<div class="pph-empty muted">Фотографии из ваших записей появятся здесь</div>'}</section>` : '';
   const list = pinned ? data.posts.filter((p) => p.id !== pinned.id) : data.posts;
   main.innerHTML = `<section class="card pcard">${cover}
-    <div class="pctop ${u.cover || own ? 'hascover' : ''}">${avatar(u, 'xl')}
-      <div class="pcinfo"><h2>${esc(u.name || u.username)}</h2><div class="muted">@${esc(u.username)}</div>
-        ${u.bio ? `<p class="bio">${linkify(u.bio)}</p>` : ''}
-        <div class="pcbtns">${own ? '<button class="btn line" id="edit">Редактировать</button>' : `<button class="btn ${u.isFollowing ? 'line' : ''}" data-follow="${esc(u.username)}" id="fbtn">${u.isFollowing ? 'Вы читаете' : 'Читать'}</button><a class="btn line" href="#/messages/${esc(u.username)}">Написать</a>`}</div></div></div>
-    ${pfacts}
+    <div class="pcbar ${cover ? 'hascover' : ''}"><span class="pcav">${avatar(u, 'xl')}${u.online ? '<i class="live" title="в сети"></i>' : ''}</span>
+      <div class="pcbtns">${own ? `<button class="btn line" id="edit">Редактировать</button><a class="btn line" href="#/settings">${I.gear}Настройки</a>` : `<button class="btn ${u.isFollowing ? 'line' : ''}" data-follow="${esc(u.username)}" id="fbtn">${u.isFollowing ? 'Вы читаете' : 'Читать'}</button><a class="btn line" href="#/messages/${esc(u.username)}">Написать</a>`}</div></div>
+    <div class="pcinfo"><h2>${esc(u.name || u.username)}</h2><div class="muted pcsub">@${esc(u.username)} · <span class="seen ${u.online ? 'on' : ''}">${seenText(u)}</span></div>
+      ${u.bio ? `<p class="bio">${linkify(u.bio)}</p>` : ''}</div>
+    ${rows.length ? `<dl class="pfacts">${rows.join('')}</dl>` : ''}
     <div class="stats">${st(u.posts, pl(u.posts, 'запись', 'записи', 'записей'))}${st(u.followers, pl(u.followers, 'читатель', 'читателя', 'читателей'), 'fcount')}${st(u.following, 'в подписках')}</div></section>
-    ${own ? `<section class="card menu">${row('#/bookmarks', I.bookmark, 'Закладки')}${row('#/notifications', I.bell, 'Уведомления')}${row('themebtn', effTheme() === 'light' ? I.moon : I.sun, effTheme() === 'light' ? 'Тёмная тема' : 'Светлая тема')}${row('logout2', I.out, 'Выйти')}</section>${composerHTML()}` : ''}
+    ${photos}${own ? composerHTML() : ''}
     <div class="list" id="feed">${pinned ? `<div class="pinned"><div class="pinlab">${I.pin}<span>Закреплённая запись</span></div>${postHTML(pinned)}</div>` : ''}${feedList(list, pinned ? '' : emptyBox('Постов пока нет', own ? 'Опубликуйте первый — прямо здесь, на своей странице.' : ''))}</div>`;
   const feed = document.getElementById('feed');
   infinite(feed, data.posts, (n, last) => api(`/users/${encodeURIComponent(username)}?before=${lastCur(last)}`).then((d) => d.posts));
   if (own) {
     document.getElementById('edit').onclick = () => editDialog();
-    document.getElementById('logout2').onclick = logout;
-    document.getElementById('themebtn').onclick = () => { toggleTheme(); route(); };
-    bindComposer((p) => { delete feedCache.all; delete feedCache.following; feed.querySelector('.empty')?.remove(); const pin = feed.querySelector('.pinned'); pin ? pin.insertAdjacentHTML('afterend', postHTML(p)) : feed.insertAdjacentHTML('afterbegin', postHTML(p)); });
+    document.getElementById('addphoto')?.addEventListener('click', () => document.getElementById('pick')?.click());
+    bindComposer((p) => { delete feedCache.all; delete feedCache.following; feed.querySelector('.empty')?.remove(); const pin = feed.querySelector('.pinned'); pin ? pin.insertAdjacentHTML('afterend', postHTML(p)) : feed.insertAdjacentHTML('afterbegin', postHTML(p)); if (p.image) route(); });
     document.getElementById('drawcover')?.addEventListener('click', async () => {
       const f = await drawEditor(u.cover); if (!f) return;
       const fd = new FormData(); fd.append('name', me.name); fd.append('bio', me.bio); fd.append('cover', f);
       try { me = await api('/me', { method: 'PUT', body: fd }); toast('Шапка сохранена'); route(); } catch (err) { toast(err.message); }
     });
   }
+}
+
+// «Настройки»: закладки, уведомления, выход
+function settingsView() {
+  const main = page({ key: 'me', title: titleOf('Настройки'), back: true, backTo: '#/u/' + me.username });
+  const row = (href, icon, label) => `<a href="${href}" class="mrow2">${icon}<span>${label}</span></a>`;
+  main.innerHTML = `<section class="card menu">${row('#/bookmarks', I.bookmark, 'Закладки')}${row('#/notifications', I.bell, 'Уведомления')}<button type="button" class="mrow2 danger" id="logout3">${I.out}<span>Выйти</span></button></section>`;
+  document.getElementById('logout3').onclick = logout;
+}
+
+// все фотографии пользователя (картинки из его записей)
+async function photosView(username) {
+  const v = view;
+  const main = page({ key: '', title: titleOf('Фотографии'), back: true });
+  main.innerHTML = '<div class="empty">Загрузка…</div>';
+  let d;
+  try { d = await api(`/users/${encodeURIComponent(username)}/photos`); }
+  catch (e) { return void (v === view && (main.innerHTML = errBox(e))); }
+  if (v !== view) return;
+  document.querySelector('#head .ht').innerHTML = titleOf(`Фотографии · ${esc(d.user.name || d.user.username)}`);
+  if (!d.photos.length) return void (main.innerHTML = emptyBox('Фотографий пока нет', 'Картинки из записей появятся здесь.'));
+  const cells = (arr) => arr.map((p) => `<img data-zoom src="${esc(p.image)}" alt="Фото" loading="lazy" decoding="async">`).join('');
+  main.innerHTML = `<div class="muted pgcount">${d.total} ${pl(d.total, 'фотография', 'фотографии', 'фотографий')}</div><div class="pgrid" id="pgrid">${cells(d.photos)}</div>`;
+  let last = d.photos;
+  const more = () => {
+    if (last.length < 30) return;
+    const b = document.createElement('button'); b.className = 'btn line pgmore'; b.textContent = 'Показать ещё'; main.appendChild(b);
+    b.onclick = async () => {
+      b.disabled = true;
+      try { const n = await api(`/users/${encodeURIComponent(username)}/photos?before=${last[last.length - 1].id}`); document.getElementById('pgrid').insertAdjacentHTML('beforeend', cells(n.photos)); last = n.photos; b.remove(); more(); }
+      catch (e) { toast(e.message); b.disabled = false; }
+    };
+  };
+  more();
 }
 
 function editDialog() {
@@ -542,7 +593,7 @@ function editDialog() {
     <section class="esec"><h3>Личное</h3>
       <div class="field"><span>Пол <small class="muted">нужен для правильных окончаний в уведомлениях</small></span><div class="pills">${radio('m', 'Мужской')}${radio('f', 'Женский')}${radio('', 'Не указан')}</div></div>
       <label class="field"><span>Семейное положение</span><select name="relationship">${opts(REL_L, me.relationship || '')}</select></label>
-      <label class="field" id="partnerf" ${REL_PARTNER.includes(me.relationship) ? '' : 'hidden'}><span>Партнёр <small class="muted">имя пользователя, необязательно</small></span><input name="partner" maxlength="20" placeholder="@username" value="${esc(me.partner || '')}" autocapitalize="none"></label></section>
+      <label class="field" id="partnerf" ${REL_PARTNER.includes(me.relationship) ? '' : 'hidden'}><span>Партнёр <small class="muted">имя пользователя, необязательно</small></span><input name="partner" maxlength="20" placeholder="@username" value="${esc(me.partner || '')}" autocapitalize="none"><small class="hint" id="phint"></small></label></section>
     <section class="esec"><h3>Контакты</h3>
       <label class="field"><span>Сайт</span><input name="website" maxlength="100" placeholder="example.com" value="${esc(me.website || '')}" inputmode="url" autocapitalize="none"></label>
       <label class="field"><span>Telegram</span><input name="telegram" maxlength="60" placeholder="@username" value="${esc(me.telegram || '')}" autocapitalize="none"></label></section>
@@ -555,6 +606,12 @@ function editDialog() {
   d.querySelector('#cancel').onclick = () => d.close();
   d.addEventListener('close', () => d.remove());
   const rel = d.querySelector('[name=relationship]'), pf = d.querySelector('#partnerf');
+  const pin = d.querySelector('[name=partner]'), phint = d.querySelector('#phint'); let ptimer;
+  pin.addEventListener('input', () => {
+    clearTimeout(ptimer); const q = pin.value.trim().replace(/^@/, ''); phint.textContent = ''; phint.className = 'hint';
+    if (!q) return;
+    ptimer = setTimeout(async () => { try { const r = await api('/search?q=' + encodeURIComponent(q)); const f = r.users.find((x) => x.username.toLowerCase() === q.toLowerCase()); if (pin.value.trim().replace(/^@/, '') !== q) return; phint.className = 'hint ' + (f ? 'ok' : 'bad'); phint.textContent = f ? `Найден: ${f.name || f.username}. В профиле будет ссылка` : 'Такого пользователя в Kolo нет. Покажем просто как текст'; } catch {} }, 400);
+  });
   rel.onchange = () => { pf.hidden = !REL_PARTNER.includes(rel.value); };
   const ec = d.querySelector('#ecover'), rm = d.querySelector('#erm');
   d.querySelector('#edraw').onclick = async () => {
@@ -603,6 +660,10 @@ async function postView(id) {
   const setCFile = (x) => { cfile = x; cprev.hidden = !x; if (x) cprev.querySelector('img').src = URL.createObjectURL(x); else cin.value = ''; };
   cin.onchange = async () => { const x = await pickedImage(cin.files[0]); if (x) setCFile(x); else cin.value = ''; };
   document.getElementById('crm').onclick = () => setCFile(null);
+  const takeC = async (raw) => { const x = await pickedImage(raw); if (x) setCFile(x); };
+  f.text.addEventListener('paste', (e) => { const it = clipImage(e); if (it) { e.preventDefault(); takeC(it); } });
+  f.addEventListener('dragover', (e) => e.preventDefault());
+  f.addEventListener('drop', (e) => { const it = dropImage(e); if (it) { e.preventDefault(); takeC(it); } });
   const setReply = (rootId, who) => {
     replyTo = rootId; chip.hidden = !rootId;
     if (rootId) { chip.querySelector('span').textContent = 'Ответ для @' + who; f.text.value = '@' + who + ' '; f.text.focus(); }
@@ -768,7 +829,8 @@ async function threadView(username) {
   if (v !== view) return;
   const peer = data.user; let list = data.messages, more = data.more, busy = false, olderIo = null, lastDay = '', stick = true;
   document.title = baseTitle = `${peer.name || peer.username} — Kolo`;
-  document.querySelector('#head .ht').innerHTML = `<a class="chat-who" href="#/u/${esc(peer.username)}">${avatar(peer, 'sm')}<div class="cwt"><b>${esc(peer.name || peer.username)}</b><small class="muted">@${esc(peer.username)}</small></div></a>`;
+  document.querySelector('#head .ht').innerHTML = `<a class="chat-who" href="#/u/${esc(peer.username)}">${avatar(peer, 'sm')}<div class="cwt"><b>${esc(peer.name || peer.username)}</b><small class="muted seen ${peer.online ? 'on' : ''}" id="seen">${seenText(peer)}</small></div></a>`;
+  const seenTimer = setInterval(async () => { try { const p = await api('/presence/' + encodeURIComponent(peer.username)); const el = document.getElementById('seen'); if (el) { el.textContent = seenText(p); el.classList.toggle('on', p.online); } } catch {} }, 45000);
   api('/me').then((m) => { unreadMsgs = m.unread_messages || 0; paintBadge(); }).catch(() => {}); // диалог открыт — входящие прочитаны
 
   main.innerHTML = `<div class="chat" id="chat">
@@ -882,7 +944,7 @@ async function threadView(username) {
   fileIn.onchange = () => take(fileIn.files[0]);
   document.getElementById('mrm').onclick = () => setFile(null);
   ta.addEventListener('input', () => { grow(); updateSend(); });
-  ta.addEventListener('paste', (e) => { const it = [...(e.clipboardData?.files || [])].find((x) => x.type.startsWith('image/')); if (it) { e.preventDefault(); take(it); } });
+  ta.addEventListener('paste', (e) => { const it = clipImage(e); if (it) { e.preventDefault(); take(it); } });
   const chat = document.getElementById('chat');
   chat.addEventListener('dragover', (e) => e.preventDefault());
   chat.addEventListener('drop', (e) => { const it = [...(e.dataTransfer?.files || [])].find((x) => x.type.startsWith('image/')); if (it) { e.preventDefault(); take(it); } });
@@ -921,7 +983,7 @@ async function threadView(username) {
   chatCleanup = () => {
     if (vv) { vv.removeEventListener('resize', fit); vv.removeEventListener('scroll', fit); }
     document.documentElement.style.removeProperty('--vh'); document.documentElement.style.removeProperty('--vt');
-    olderIo?.disconnect();
+    olderIo?.disconnect(); clearInterval(seenTimer);
   };
 }
 
@@ -1166,6 +1228,8 @@ async function route() {
   if (a === 'notifications') return notificationsView(b);
   if (a === 'messages') return b ? threadView(decodeURIComponent(b)) : messagesView();
   if (a === 'bookmarks') return bookmarksView();
+  if (a === 'settings') return settingsView();
+  if (a === 'photos' && b) return photosView(decodeURIComponent(b));
   if (a === 'popular') return popularView(b);
   if (a === 'new') return newPostView();
   if (a === 'tag' && b) return tagView(decodeURIComponent(b));
