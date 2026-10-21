@@ -52,6 +52,22 @@ const COLUMNS = [
   ['users', 'cover', 'TEXT'], // нарисованная шапка профиля (PNG)
   ['users', 'pinned_post', 'INTEGER'],
   ['users', 'last_seen', 'TEXT'], // последний визит (для «в сети»)
+  ['users', 'email', "TEXT NOT NULL DEFAULT ''"],
+  ['users', 'phone', "TEXT NOT NULL DEFAULT ''"],
+  ['users', 'verified', 'INTEGER NOT NULL DEFAULT 0'], // синяя галочка
+  ['users', 'verify_req', "TEXT NOT NULL DEFAULT ''"], // заявка на верификацию: текст и дата
+  ['users', 'deactivated', 'INTEGER NOT NULL DEFAULT 0'], // страница заморожена до следующего входа
+  ['users', 'pv_profile', "TEXT NOT NULL DEFAULT 'all'"], // приватность: all / friends / none
+  ['users', 'pv_dm', "TEXT NOT NULL DEFAULT 'all'"],
+  ['users', 'pv_comments', "TEXT NOT NULL DEFAULT 'all'"],
+  ['users', 'pv_lists', "TEXT NOT NULL DEFAULT 'all'"],
+  ['users', 'hidden', 'INTEGER NOT NULL DEFAULT 0'], // скрыть из поиска и рекомендаций
+  ['users', 'n_off', 'INTEGER NOT NULL DEFAULT 0'], // «не беспокоить»
+  ['users', 'n_likes', 'INTEGER NOT NULL DEFAULT 1'],
+  ['users', 'n_comments', 'INTEGER NOT NULL DEFAULT 1'],
+  ['users', 'n_msgs', 'INTEGER NOT NULL DEFAULT 1'],
+  ['users', 'n_follows', 'INTEGER NOT NULL DEFAULT 1'],
+  ['users', 'n_preview', 'INTEGER NOT NULL DEFAULT 1'], // показывать текст в push
 ];
 const AFTER = [
   'CREATE INDEX IF NOT EXISTS posts_repost ON posts (repost_of)',

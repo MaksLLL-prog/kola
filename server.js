@@ -110,8 +110,8 @@ const sign = (id) => jwt.sign({ id }, SECRET, { expiresIn: '30d' });
 const auth = route(async (req, res, next) => {
   let id;
   try { id = jwt.verify((req.get('Authorization') || '').replace(/^Bearer /, ''), SECRET).id; } catch { throw new HttpError(401, 'Нужно войти в аккаунт'); }
-  const user = await db.get('SELECT id, username, name, bio, avatar, onboarded, gender, relationship, partner, website, telegram, life_main, people_main, interests, cover, pinned_post FROM users WHERE id = @id', { id });
-  if (!user) throw new HttpError(401, 'Нужно войти в аккаунт');
+  const user = await db.get('SELECT id, username, name, bio, avatar, onboarded, gender, relationship, partner, website, telegram, life_main, people_main, interests, cover, pinned_post, email, phone, verified, verify_req, deactivated, pv_profile, pv_dm, pv_comments, pv_lists, hidden, n_off, n_likes, n_comments, n_msgs, n_follows, n_preview FROM users WHERE id = @id', { id });
+  if (!user || user.deactivated) throw new HttpError(401, 'Нужно войти в аккаунт');
   touchSeen(user.id);
   req.user = user; next();
 });
@@ -150,8 +150,9 @@ app.get('/api/username-available', limitCheck, route(async (req, res) => {
 }));
 
 app.post('/api/login', limitAuth, route(async (req, res) => {
-  const u = await db.get('SELECT id, password_hash FROM users WHERE lower(username) = lower(@u)', { u: clean(req.body.username, 20) });
+  const u = await db.get('SELECT id, password_hash, deactivated FROM users WHERE lower(username) = lower(@u)', { u: clean(req.body.username, 20) });
   if (!u || !bcrypt.compareSync(String(req.body.password || ''), u.password_hash)) throw new HttpError(401, 'Неверное имя пользователя или пароль');
+  if (u.deactivated) await db.run('UPDATE users SET deactivated = 0 WHERE id = @id', { id: u.id }); // вход возвращает замороженную страницу
   res.json({ token: sign(u.id) });
 }));
 
@@ -204,6 +205,98 @@ app.put('/api/me', auth, (req, res, next) => profileUpload(req, res, (e) => next
   res.json({ ...req.user, onboarded: !!req.user.onboarded, name, bio, avatar, cover, ...u });
 }));
 
+// ---------- приватность и настройки ----------
+const PV = ['all', 'friends', 'none'];
+const areFriends = async (a, b) => !!(await db.get('SELECT 1 AS x FROM follows f1 JOIN follows f2 ON f2.follower_id = f1.followee_id AND f2.followee_id = f1.follower_id WHERE f1.follower_id = @a AND f1.followee_id = @b', { a, b }));
+async function allowed(rule, ownerId, viewerId) { // «друзья» — взаимная подписка
+  if (ownerId === viewerId || !rule || rule === 'all') return true;
+  return rule === 'friends' ? areFriends(ownerId, viewerId) : false;
+}
+const SETTINGS_KEYS = ['pv_profile', 'pv_dm', 'pv_comments', 'pv_lists', 'hidden', 'n_off', 'n_likes', 'n_comments', 'n_msgs', 'n_follows', 'n_preview'];
+const settingsOf = (u) => Object.fromEntries(SETTINGS_KEYS.map((k) => [k, k.startsWith('pv_') ? u[k] : +u[k]]));
+const accountOf = (u) => ({ username: u.username, name: u.name, email: u.email, phone: u.phone, verified: !!u.verified, verify_req: u.verify_req ? u.verify_req.slice(0, 10) : '' });
+async function needPassword(req) {
+  const row = await db.get('SELECT password_hash FROM users WHERE id = @id', { id: req.user.id });
+  if (!bcrypt.compareSync(String(req.body.password || ''), row.password_hash)) throw new HttpError(403, 'Неверный пароль');
+}
+app.get('/api/settings', auth, (req, res) => res.json({ ...settingsOf(req.user), account: accountOf(req.user) }));
+app.put('/api/settings', auth, limitWrites, route(async (req, res) => {
+  const b = req.body || {}, set = {};
+  for (const k of SETTINGS_KEYS) {
+    if (b[k] === undefined) continue;
+    if (k.startsWith('pv_')) { if (!PV.includes(b[k])) throw new HttpError(400, 'Недопустимое значение'); set[k] = b[k]; }
+    else set[k] = b[k] ? 1 : 0;
+  }
+  const keys = Object.keys(set);
+  if (keys.length) await db.run(`UPDATE users SET ${keys.map((k) => `${k} = @${k}`).join(', ')} WHERE id = @id`, { ...set, id: req.user.id });
+  res.json({ ...settingsOf({ ...req.user, ...set }) });
+}));
+app.put('/api/me/username', auth, limitAuth, route(async (req, res) => {
+  const username = clean(req.body.username, 20);
+  if (!/^[A-Za-z0-9_]{3,20}$/.test(username)) throw new HttpError(400, 'Имя пользователя: 3–20 символов, латиница, цифры и _');
+  if (await db.get('SELECT 1 AS x FROM users WHERE lower(username) = lower(@u) AND id != @id', { u: username, id: req.user.id })) throw new HttpError(409, 'Это имя пользователя уже занято');
+  try { await db.run('UPDATE users SET username = @u WHERE id = @id', { u: username, id: req.user.id }); }
+  catch (e) { if (/unique/i.test(e.message)) throw new HttpError(409, 'Это имя пользователя уже занято'); throw e; }
+  res.json({ username });
+}));
+app.put('/api/me/email', auth, limitAuth, route(async (req, res) => {
+  const email = clean(req.body.email, 120).toLowerCase();
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) throw new HttpError(400, 'Похоже, это не адрес почты');
+  await needPassword(req);
+  if (email && await db.get("SELECT 1 AS x FROM users WHERE email = @e AND id != @id", { e: email, id: req.user.id })) throw new HttpError(409, 'Эта почта уже привязана к другому аккаунту');
+  await db.run('UPDATE users SET email = @e WHERE id = @id', { e: email, id: req.user.id });
+  res.json({ email });
+}));
+app.put('/api/me/phone', auth, limitAuth, route(async (req, res) => {
+  const raw = clean(req.body.phone, 30), phone = raw.replace(/[^\d+]/g, '');
+  if (phone && !/^\+?\d{10,15}$/.test(phone)) throw new HttpError(400, 'Номер в формате +79991234567');
+  await db.run('UPDATE users SET phone = @p WHERE id = @id', { p: phone, id: req.user.id });
+  res.json({ phone });
+}));
+app.post('/api/me/password', auth, limitAuth, route(async (req, res) => {
+  const next = String(req.body.new_password || '');
+  if (next.length < 8) throw new HttpError(400, 'Новый пароль должен быть не короче 8 символов');
+  await needPassword(req);
+  await db.run('UPDATE users SET password_hash = @h WHERE id = @id', { h: bcrypt.hashSync(next, 10), id: req.user.id });
+  res.json({ ok: true });
+}));
+app.post('/api/me/verify-request', auth, limitWrites, route(async (req, res) => {
+  if (req.user.verified) throw new HttpError(400, 'Профиль уже подтверждён');
+  if (req.user.verify_req) throw new HttpError(400, 'Заявка уже отправлена и ждёт рассмотрения');
+  const note = clean(req.body.note, 300);
+  if (note.length < 10) throw new HttpError(400, 'Расскажите в паре предложений, кто вы и чем известны (от 10 символов)');
+  const v = now() + '|' + note;
+  await db.run('UPDATE users SET verify_req = @v WHERE id = @id', { v, id: req.user.id });
+  res.json({ ok: true });
+}));
+// Модерация заявок: без админ-панели. Задайте ADMIN_TOKEN в окружении и вызовите:
+// curl -X POST -H "x-admin-token: …" -H "content-type: application/json" -d '{"username":"anna","verified":true}' /api/admin/verify
+app.post('/api/admin/verify', route(async (req, res) => {
+  const tok = process.env.ADMIN_TOKEN || '', got = String(req.get('x-admin-token') || '');
+  if (!tok || got.length !== tok.length || !crypto.timingSafeEqual(Buffer.from(got), Buffer.from(tok))) throw new HttpError(403, 'Нет доступа');
+  const r = await db.run('UPDATE users SET verified = @v, verify_req = @r WHERE lower(username) = lower(@u)', { v: req.body.verified === false ? 0 : 1, r: '', u: String(req.body.username || '') });
+  res.json({ ok: !!r.changes });
+}));
+function dropStreams(id) { for (const r of clients.get(id) || []) r.end(); clients.delete(id); }
+app.post('/api/me/deactivate', auth, limitAuth, route(async (req, res) => {
+  await needPassword(req);
+  await db.run('UPDATE users SET deactivated = 1 WHERE id = @id', { id: req.user.id });
+  dropStreams(req.user.id);
+  res.json({ ok: true });
+}));
+app.delete('/api/me', auth, limitAuth, route(async (req, res) => {
+  await needPassword(req);
+  const id = req.user.id, p = { id };
+  const files = [req.user.avatar, req.user.cover,
+    ...(await db.all('SELECT image FROM posts WHERE user_id = @id AND image IS NOT NULL', p)).map((r) => r.image),
+    ...(await db.all('SELECT image FROM comments WHERE user_id = @id AND image IS NOT NULL', p)).map((r) => r.image),
+    ...(await db.all('SELECT image FROM messages WHERE (sender_id = @id OR recipient_id = @id) AND image IS NOT NULL', p)).map((r) => r.image)];
+  dropStreams(id);
+  await db.run('DELETE FROM users WHERE id = @id', p); // остальное убирает каскад: посты, лайки, комментарии, подписки, сообщения, push-подписки
+  for (const f of files) await storage.remove(f).catch(() => {});
+  res.json({ ok: true });
+}));
+
 // ---------- уведомления ----------
 async function mentionedUsers(text) {
   const names = [...new Set((text.match(/(?:^|\s)@([A-Za-z0-9_]{3,20})/g) || []).map((m) => m.trim().slice(1).toLowerCase()))].slice(0, 5);
@@ -214,17 +307,22 @@ async function mentionedUsers(text) {
 
 async function notify(actor, userId, type, postId, text = '') {
   if (userId === actor.id) return;
+  const pr = await db.get('SELECT n_off, n_likes, n_comments, n_follows, n_preview FROM users WHERE id = @u AND deactivated = 0', { u: userId });
+  if (!pr) return;
+  const grp = { like: 'n_likes', repost: 'n_likes', comment: 'n_comments', reply: 'n_comments', mention: 'n_comments', follow: 'n_follows' }[type];
+  if (grp && !pr[grp]) return; // этот тип событий выключен
   if (type === 'like' || type === 'follow' || type === 'repost') { // не спамим повторными лайками/подписками
     if (await db.get('SELECT 1 AS x FROM notifications WHERE user_id = @u AND actor_id = @a AND type = @t AND post_id = @p', { u: userId, a: actor.id, t: type, p: postId })) return;
   }
   const snippet = text.slice(0, 90), created_at = now();
   const id = await db.insert('INSERT INTO notifications (user_id, actor_id, type, post_id, text, created_at) VALUES (@u,@a,@t,@p,@x,@c)',
     { u: userId, a: actor.id, t: type, p: postId, x: snippet, c: created_at });
+  if (pr.n_off) return; // «не беспокоить»: запись в списке есть, но без всплывающих событий и push
   const post = postId ? await db.get('SELECT text, image FROM posts WHERE id = @p', { p: postId }) : null;
   const post_text = post ? post.text.slice(0, 90) : '', post_image = post ? post.image : null;
   emit(userId, 'notification', { id, type, post_id: postId, text: snippet, post_text, post_image, created_at, is_read: 0, username: actor.username, name: actor.name, avatar: actor.avatar, gender: actor.gender || '' });
   push.notifyUser(userId, {
-    title: actor.name || actor.username, body: `${noteVerb(type, actor.gender)}${snippet || post_text ? ': ' + (snippet || post_text) : ''}`,
+    title: actor.name || actor.username, body: `${noteVerb(type, actor.gender)}${pr.n_preview && (snippet || post_text) ? ': ' + (snippet || post_text) : ''}`,
     url: type === 'follow' ? '#/u/' + actor.username : '#/post/' + postId, tag: `n-${type}-${postId}`, icon: actor.avatar || '/icon-192.png',
   }).catch(() => {});
 }
@@ -305,7 +403,7 @@ app.get('/api/stream', (req, res) => {
 const EID = 'COALESCE(p.repost_of, p.id)';
 const cnt = (sql) => `(SELECT CAST(COUNT(*) AS INTEGER) FROM ${sql})`;
 const POST_COLS = `${EID} AS id, COALESCE(o.text, p.text) AS text, COALESCE(o.image, p.image) AS image,
-  COALESCE(o.created_at, p.created_at) AS created_at, u.username, u.name, u.avatar,
+  COALESCE(o.created_at, p.created_at) AS created_at, u.username, u.name, u.avatar, u.verified,
   CASE WHEN p.repost_of IS NULL THEN NULL ELSE ru.username END AS reposted_by,
   CASE WHEN p.repost_of IS NULL THEN NULL ELSE ru.name END AS reposted_by_name,
   ${cnt(`likes l WHERE l.post_id = ${EID}`)} AS likes,
@@ -314,7 +412,7 @@ const POST_COLS = `${EID} AS id, COALESCE(o.text, p.text) AS text, COALESCE(o.im
   EXISTS(SELECT 1 FROM likes l WHERE l.post_id = ${EID} AND l.user_id = @me) AS liked,
   EXISTS(SELECT 1 FROM posts r WHERE r.repost_of = ${EID} AND r.user_id = @me) AS reposted,
   EXISTS(SELECT 1 FROM bookmarks b WHERE b.post_id = ${EID} AND b.user_id = @me) AS bookmarked`;
-const POST_JOINS = 'LEFT JOIN posts o ON o.id = p.repost_of JOIN users u ON u.id = COALESCE(o.user_id, p.user_id) JOIN users ru ON ru.id = p.user_id';
+const POST_JOINS = 'LEFT JOIN posts o ON o.id = p.repost_of JOIN users u ON u.id = COALESCE(o.user_id, p.user_id) AND u.deactivated = 0 JOIN users ru ON ru.id = p.user_id';
 function postSql({ from = 'posts p', where = '', order = 'ORDER BY p.id DESC', cur = 'p.id' } = {}) {
   return `SELECT ${POST_COLS}, ${cur} AS cur FROM ${from} ${POST_JOINS} ${where} ${order}`;
 }
@@ -429,7 +527,8 @@ app.get('/api/posts/:id', auth, route(async (req, res) => {
   if (!post) throw new HttpError(404, 'Пост не найден');
   const comments = await db.all(`SELECT c.id, c.parent_id, c.text, c.image, c.created_at, u.username, u.name, u.avatar
     FROM comments c JOIN users u ON u.id = c.user_id WHERE c.post_id = @p ORDER BY c.id`, { p: post.id });
-  res.json({ post, comments });
+  const ow = await db.get('SELECT id, pv_comments FROM users WHERE username = @u', { u: post.username });
+  res.json({ post, comments, can_comment: await allowed(ow.pv_comments, ow.id, req.user.id) });
 }));
 
 app.delete('/api/posts/:id', auth, route(async (req, res) => {
@@ -464,6 +563,8 @@ app.post('/api/posts/:id/comments', auth, limitWrites, upload.single('image'), r
   const text = clean(req.body.text, 300);
   if (!text && !req.file) throw new HttpError(400, 'Комментарий не может быть пустым');
   const post = await origPost(req.params.id), id = post.id;
+  const owner = await db.get('SELECT pv_comments FROM users WHERE id = @i', { i: post.user_id });
+  if (!(await allowed(owner.pv_comments, post.user_id, req.user.id))) throw new HttpError(403, 'Автор ограничил комментарии к своим постам');
   let parent = null, rootId = null;
   if (req.body.parent_id) {
     parent = await db.get('SELECT id, user_id, parent_id FROM comments WHERE id = @c AND post_id = @p', { c: +req.body.parent_id || 0, p: id });
@@ -485,8 +586,9 @@ app.post('/api/posts/:id/comments', auth, limitWrites, upload.single('image'), r
 
 // ---------- профили, подписки, поиск ----------
 app.get('/api/users/:username/photos', auth, route(async (req, res) => {
-  const u = await db.get('SELECT id, username, name FROM users WHERE lower(username) = lower(@u)', { u: req.params.username });
-  if (!u) throw new HttpError(404, 'Пользователь не найден');
+  const u = await db.get('SELECT id, username, name, deactivated, pv_profile FROM users WHERE lower(username) = lower(@u)', { u: req.params.username });
+  if (!u || u.deactivated) throw new HttpError(404, 'Пользователь не найден');
+  if (!(await allowed(u.pv_profile, u.id, req.user.id))) throw new HttpError(403, 'Автор ограничил доступ к странице');
   const [total, photos] = await Promise.all([
     count('SELECT CAST(COUNT(*) AS INTEGER) AS n FROM posts WHERE user_id = @id AND repost_of IS NULL AND image IS NOT NULL', { id: u.id }),
     db.all('SELECT id, image FROM posts WHERE user_id = @id AND repost_of IS NULL AND image IS NOT NULL AND id < @before ORDER BY id DESC LIMIT 30', { id: u.id, before: cursorOf(req) }),
@@ -500,8 +602,10 @@ app.get('/api/presence/:username', auth, route(async (req, res) => {
   res.json({ online: isOnline(u.id, u.last_seen), last_seen: u.last_seen, gender: u.gender });
 }));
 app.get('/api/users/:username', auth, route(async (req, res) => {
-  const u = await db.get('SELECT id, username, name, bio, avatar, created_at, gender, relationship, partner, website, telegram, life_main, people_main, interests, cover, pinned_post, last_seen FROM users WHERE lower(username) = lower(@u)', { u: req.params.username });
-  if (!u) throw new HttpError(404, 'Пользователь не найден');
+  const u = await db.get('SELECT id, username, name, bio, avatar, created_at, gender, relationship, partner, website, telegram, life_main, people_main, interests, cover, pinned_post, last_seen, verified, deactivated, pv_profile, pv_dm, pv_comments, pv_lists FROM users WHERE lower(username) = lower(@u)', { u: req.params.username });
+  if (!u || u.deactivated) throw new HttpError(404, 'Пользователь не найден');
+  const [canSee, canDM, canLists, isF0] = await Promise.all([allowed(u.pv_profile, u.id, req.user.id), allowed(u.pv_dm, u.id, req.user.id), allowed(u.pv_lists, u.id, req.user.id), db.get('SELECT 1 AS x FROM follows WHERE follower_id = @me AND followee_id = @id', { me: req.user.id, id: u.id })]);
+  if (!canSee) return res.json({ photos: { count: 0, items: [] }, posts: [], pinned: null, user: { username: u.username, name: u.name, avatar: u.avatar, verified: !!u.verified, restricted: true, rule: u.pv_profile, canDM, isFollowing: !!isF0 } });
   const before = cursorOf(req);
   const [posts, followers, following, isF, list] = await Promise.all([
     count('SELECT CAST(COUNT(*) AS INTEGER) AS n FROM posts WHERE user_id = @id AND repost_of IS NULL', { id: u.id }),
@@ -516,8 +620,8 @@ app.get('/api/users/:username', auth, route(async (req, res) => {
     count('SELECT CAST(COUNT(*) AS INTEGER) AS n FROM posts WHERE user_id = @id AND repost_of IS NULL AND image IS NOT NULL', { id: u.id }),
     db.all('SELECT id, image FROM posts WHERE user_id = @id AND repost_of IS NULL AND image IS NOT NULL ORDER BY id DESC LIMIT 4', { id: u.id }),
   ]);
-  const { pinned_post, ...pub } = u;
-  res.json({ photos: { count: pcount, items: pitems }, user: { ...pub, online: isOnline(u.id, u.last_seen), partner: partner || (u.partner ? { username: '', name: u.partner } : null), posts, followers, following, isFollowing: !!isF }, posts: asPosts(list), pinned });
+  const { pinned_post, deactivated, pv_profile, pv_dm, pv_comments, pv_lists, ...pub } = u;
+  res.json({ photos: { count: pcount, items: pitems }, user: { ...pub, verified: !!u.verified, canDM, online: isOnline(u.id, u.last_seen), partner: partner || (u.partner ? { username: '', name: u.partner } : null), posts, followers, following: canLists ? following : null, isFollowing: !!isF }, posts: asPosts(list), pinned });
 }));
 
 app.post('/api/users/:username/follow', auth, limitWrites, route(async (req, res) => {
@@ -534,7 +638,7 @@ app.post('/api/users/:username/follow', auth, limitWrites, route(async (req, res
 
 app.get('/api/suggestions', auth, route(async (req, res) => {
   res.json(await db.all(`SELECT username, name, avatar FROM users
-    WHERE id != @me AND id NOT IN (SELECT followee_id FROM follows WHERE follower_id = @me)
+    WHERE id != @me AND deactivated = 0 AND hidden = 0 AND id NOT IN (SELECT followee_id FROM follows WHERE follower_id = @me)
     ORDER BY (SELECT COUNT(*) FROM follows f WHERE f.followee_id = users.id) DESC, id DESC LIMIT @lim`,
     { me: req.user.id, lim: Math.max(1, Math.min(parseInt(req.query.limit) || 5, 20)) }));
 }));
@@ -544,14 +648,14 @@ app.get('/api/search', auth, route(async (req, res) => {
   if (!q) return res.json({ users: [], posts: [] });
   const like = '%' + q.replace(/[\\%_]/g, '\\$&') + '%';
   res.json({
-    users: await db.all("SELECT username, name, avatar, bio FROM users WHERE lower(username) LIKE lower(@l) ESCAPE '\\' OR lower(name) LIKE lower(@l) ESCAPE '\\' OR lower(interests) LIKE lower(@l) ESCAPE '\\' LIMIT 20", { l: like }),
+    users: await db.all("SELECT username, name, avatar, bio FROM users WHERE deactivated = 0 AND hidden = 0 AND (lower(username) LIKE lower(@l) ESCAPE '\\' OR lower(name) LIKE lower(@l) ESCAPE '\\' OR lower(interests) LIKE lower(@l) ESCAPE '\\') LIMIT 20", { l: like }),
     posts: asPosts(await db.all(`${postSql({ where: "WHERE p.repost_of IS NULL AND lower(p.text) LIKE lower(@q) ESCAPE '\\'" })} LIMIT 30`, { me: req.user.id, q: like })),
   });
 }));
 
 // ---------- личные сообщения ----------
 const userByName = async (name) => {
-  const u = await db.get('SELECT id, username, name, avatar, gender, last_seen FROM users WHERE lower(username) = lower(@u)', { u: String(name) });
+  const u = await db.get('SELECT id, username, name, avatar, gender, last_seen, pv_dm, n_off, n_msgs, n_preview FROM users WHERE lower(username) = lower(@u) AND deactivated = 0', { u: String(name) });
   if (!u) throw new HttpError(404, 'Пользователь не найден');
   return u;
 };
@@ -596,12 +700,14 @@ app.post('/api/messages/:username', auth, limitWrites, upload.single('image'), r
   const u = await userByName(req.params.username), text = clean(req.body.text, 2000);
   if (u.id === req.user.id) throw new HttpError(400, 'Нельзя написать самому себе');
   if (!text && !req.file) throw new HttpError(400, 'Сообщение не может быть пустым');
+  if (!(await allowed(u.pv_dm, u.id, req.user.id))) throw new HttpError(403, u.pv_dm === 'friends' ? 'Этот человек принимает сообщения только от друзей (взаимная подписка)' : 'Этот человек закрыл личные сообщения');
   const image = req.file ? await saveImage(req.file) : null, created_at = now();
   const rep = +req.body.reply_to ? await db.get('SELECT id, text, image, sender_id FROM messages WHERE id = @i AND ((sender_id = @a AND recipient_id = @b) OR (sender_id = @b AND recipient_id = @a))', { i: +req.body.reply_to, a: req.user.id, b: u.id }) : null;
   const id = await db.insert('INSERT INTO messages (sender_id, recipient_id, text, image, reply_to, created_at) VALUES (@s,@r,@t,@i,@rt,@c)', { s: req.user.id, r: u.id, t: text, i: image, rt: rep ? rep.id : null, c: created_at });
   const reply = rep ? { id: rep.id, text: rep.text, image: rep.image, mine: rep.sender_id === req.user.id } : null;
-  emit(u.id, 'message', { id, text, image, reply: rep ? { ...reply, mine: !reply.mine } : null, created_at, username: req.user.username, name: req.user.name, avatar: req.user.avatar });
-  push.notifyUser(u.id, { title: req.user.name || req.user.username, body: text || '📷 Фото', url: '#/messages/' + req.user.username, tag: 'msg-' + req.user.username, icon: req.user.avatar || '/icon-192.png' }).catch(() => {});
+  const ping = !u.n_off && u.n_msgs;
+  if (ping) emit(u.id, 'message', { id, text, image, reply: rep ? { ...reply, mine: !reply.mine } : null, created_at, username: req.user.username, name: req.user.name, avatar: req.user.avatar });
+  if (ping) push.notifyUser(u.id, { title: req.user.name || req.user.username, body: u.n_preview ? (text || '📷 Фото') : 'Новое сообщение', url: '#/messages/' + req.user.username, tag: 'msg-' + req.user.username, icon: req.user.avatar || '/icon-192.png' }).catch(() => {});
   res.json({ id, text, image, reply, created_at, mine: true, is_read: 0 });
 }));
 

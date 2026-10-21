@@ -9,8 +9,8 @@ const feedCache = {}; // последняя загруженная лента: �
 
 // тема: тёмная по умолчанию, светлая — по выбору (хранится в браузере)
 const getTheme = () => { try { return localStorage.getItem('kolo_theme') || 'system'; } catch { return 'system'; } };
-const effTheme = () => { const t = getTheme(); return t === 'system' ? (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : t; };
-const applyTheme = () => { const t = effTheme(); document.documentElement.dataset.theme = t; document.querySelector('meta[name=theme-color]')?.setAttribute('content', t === 'light' ? '#F4F5F8' : '#080C10'); };
+const effTheme = () => { const t = getTheme(); return t === 'system' || !['dark', 'black', 'light'].includes(t) ? (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : t; };
+const applyTheme = () => { const t = effTheme(); document.documentElement.dataset.theme = t; document.querySelector('meta[name=theme-color]')?.setAttribute('content', t === 'light' ? '#F4F5F8' : t === 'black' ? '#000000' : '#080C10'); };
 applyTheme();
 matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', () => { if (getTheme() === 'system') applyTheme(); });
 function toggleTheme() { const t = effTheme() === 'light' ? 'dark' : 'light'; try { localStorage.setItem('kolo_theme', t); } catch {} applyTheme(); const b = document.getElementById('themebtn2'); if (b) b.lastChild.textContent = t === 'light' ? 'Тёмная тема' : 'Светлая тема'; }
@@ -74,6 +74,7 @@ const I = {
   moon: ic('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'),
   check: ic('<path d="M5 12.5l4.5 4.5L19 7.5"/>', 'stroke-width="2.4"'),
   checks: ic('<path d="M1.5 12.5l4.5 4.5L15.5 7M11 16.5l1.500 1.500L22 7"/>', 'stroke-width="2.2"'),
+  lock: ic('<rect x="4" y="11" width="16" height="10" rx="3"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>'),
   alert: ic('<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/>'),
   compose: ic('<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'),
 };
@@ -157,7 +158,7 @@ async function loadMe() { me = await api('/me'); unread = me.unread || 0; unread
 // ---------- каркас: строится один раз, дальше меняется только содержимое ----------
 function ensureShell() {
   if (document.getElementById('main')) return;
-  const a = (k, h, label, icon, cls = '') => `<a data-k="${k}" href="${h}" class="${cls}">${icon}<span>${label}</span></a>`;
+  const a = (k, h, label, icon, cls = '') => `<a data-k="${k}" href="${h}" class="${cls}"><b class="ni">${icon}</b><span>${label}</span></a>`;
   app.innerHTML = `<header class="topbar"><div class="topin">
       <a class="tlogo" href="#/">${LOGO}<span>Kolo</span></a>
       <form class="tsearch" id="tsearch" role="search">${I.search}<input name="q" type="search" placeholder="Поиск" aria-label="Поиск" autocomplete="off"></form>
@@ -166,10 +167,10 @@ function ensureShell() {
     <nav class="nav" aria-label="Основное меню">
       ${a('home', '#/', 'Лента', I.home)}${a('popular', '#/popular', 'Популярное', I.flame, 'dsk')}${a('search', '#/search', 'Поиск', I.search)}
       <a data-k="new" href="#/new" class="plus" aria-label="Новая запись">${I.plus}</a>
-      <a data-k="msgs" href="#/messages">${I.mail}<span>Сообщения</span><i class="badge" id="mbadge" hidden></i></a>
+      <a data-k="msgs" href="#/messages"><b class="ni">${I.mail}</b><span>Сообщения</span><i class="badge" id="mbadge" hidden></i></a>
       ${a('bm', '#/bookmarks', 'Закладки', I.bookmark, 'dsk')}
-      <a data-k="notes" href="#/notifications" class="dsk">${I.bell}<span>Уведомления</span><i class="badge" id="badge" hidden></i></a>
-      <a data-k="me" href="#/u/${esc(me.username)}">${I.user}<span>Профиль</span></a>
+      <a data-k="notes" href="#/notifications" class="dsk"><b class="ni">${I.bell}</b><span>Уведомления</span><i class="badge" id="badge" hidden></i></a>
+      <a data-k="me" href="#/u/${esc(me.username)}"><b class="ni">${I.user}</b><span>Профиль</span></a>
       <div class="navfoot dsk"><a href="#/new">Новая запись</a><button type="button" id="themebtn2"><span hidden></span>${effTheme() === 'light' ? 'Тёмная тема' : 'Светлая тема'}</button><button type="button" id="logout">Выйти</button></div>
     </nav>
     <div class="col">
@@ -235,7 +236,7 @@ function postHTML(p) {
   const rp = p.reposted_by ? `<div class="rp muted">${I.repost}<span>${p.reposted_by === me.username ? 'Вы сделали репост' : `Репост от <a href="#/u/${esc(p.reposted_by)}">${esc(p.reposted_by_name || p.reposted_by)}</a>`}</span></div>` : '';
   return `<article class="card post" data-id="${p.id}" data-ctx="post">${rp}
     <header class="ph"><a class="pav" href="#/u/${esc(p.username)}" tabindex="-1" aria-hidden="true">${avatar(p)}</a>
-      <div class="pmeta"><a class="pname" href="#/u/${esc(p.username)}">${esc(p.name || p.username)}</a>
+      <div class="pmeta"><a class="pname" href="#/u/${esc(p.username)}">${nameHTML(p)}</a>
         <div class="psub"><span class="pun">@${esc(p.username)}</span><a class="ptime" href="#/post/${p.id}" title="${esc(new Date(p.created_at).toLocaleString('ru'))}">${ago(p.created_at)}</a></div></div>
       <button class="icon more" data-more aria-label="Ещё">${I.more}</button>
       ${p.username === me.username ? `<button class="icon del" data-del="${p.id}" aria-label="Удалить запись">${I.trash}</button>` : ''}</header>
@@ -501,8 +502,16 @@ async function profileView(username) {
   catch (e) { return void (v === view && (main.innerHTML = errBox(e))); }
   if (v !== view) return;
   const u = data.user, pinned = data.pinned, ph = data.photos || { count: 0, items: [] };
+  if (u.restricted) {
+    document.querySelector('#head .ht').innerHTML = titleOf(nameHTML(u));
+    main.innerHTML = `<section class="card pcard"><div class="pcbar"><span class="pcav">${avatar(u, 'xl')}</span></div>
+      <div class="pcinfo"><h2>${nameHTML(u)}</h2><div class="muted pcsub">@${esc(u.username)}</div></div>
+      <div class="restr">${I.lock}<b>Страница скрыта</b><span class="muted">${u.rule === 'friends' ? 'Её видят только друзья — взаимные подписчики.' : 'Автор ограничил доступ к странице.'}</span></div>
+      <div class="pcbar"><div class="pcbtns"><button class="btn ${u.isFollowing ? 'line' : ''}" data-follow="${esc(u.username)}" id="fbtn">${u.isFollowing ? 'Вы читаете' : 'Читать'}</button>${u.canDM ? `<a class="btn line" href="#/messages/${esc(u.username)}">Написать</a>` : ''}</div></div></section>`;
+    return;
+  }
   document.title = baseTitle = `${u.name || u.username} — Kolo`;
-  if (!own) document.querySelector('#head .ht').innerHTML = titleOf(esc(u.name || u.username));
+  if (!own) document.querySelector('#head .ht').innerHTML = titleOf(nameHTML(u));
   const st = (n, label, id = '') => `<div><b${id ? ` id="${id}"` : ''}>${n}</b><span>${label}</span></div>`;
   const cover = u.cover
     ? `<div class="pcover"><img src="${esc(u.cover)}" alt="Шапка профиля" data-zoom decoding="async">${own ? `<button type="button" class="btn sm line pcedit" id="drawcover">${I.edit}Рисовать</button>` : ''}</div>`
@@ -522,11 +531,11 @@ async function profileView(username) {
   const list = pinned ? data.posts.filter((p) => p.id !== pinned.id) : data.posts;
   main.innerHTML = `<section class="card pcard">${cover}
     <div class="pcbar ${cover ? 'hascover' : ''}"><span class="pcav">${avatar(u, 'xl')}${u.online ? '<i class="live" title="в сети"></i>' : ''}</span>
-      <div class="pcbtns">${own ? `<button class="btn line" id="edit">Редактировать</button><a class="btn line" href="#/settings">${I.gear}Настройки</a>` : `<button class="btn ${u.isFollowing ? 'line' : ''}" data-follow="${esc(u.username)}" id="fbtn">${u.isFollowing ? 'Вы читаете' : 'Читать'}</button><a class="btn line" href="#/messages/${esc(u.username)}">Написать</a>`}</div></div>
-    <div class="pcinfo"><h2>${esc(u.name || u.username)}</h2><div class="muted pcsub">@${esc(u.username)} · <span class="seen ${u.online ? 'on' : ''}">${seenText(u)}</span></div>
+      <div class="pcbtns">${own ? `<button class="btn line" id="edit">Редактировать</button><a class="btn line" href="#/settings">${I.gear}Настройки</a>` : `<button class="btn ${u.isFollowing ? 'line' : ''}" data-follow="${esc(u.username)}" id="fbtn">${u.isFollowing ? 'Вы читаете' : 'Читать'}</button>${u.canDM ? `<a class="btn line" href="#/messages/${esc(u.username)}">Написать</a>` : '<button class="btn line" disabled title="Автор ограничил личные сообщения">Сообщения закрыты</button>'}`}</div></div>
+    <div class="pcinfo"><h2>${nameHTML(u)}</h2><div class="muted pcsub">@${esc(u.username)} · <span class="seen ${u.online ? 'on' : ''}">${seenText(u)}</span></div>
       ${u.bio ? `<p class="bio">${linkify(u.bio)}</p>` : ''}</div>
     ${rows.length ? `<dl class="pfacts">${rows.join('')}</dl>` : ''}
-    <div class="stats">${st(u.posts, pl(u.posts, 'запись', 'записи', 'записей'))}${st(u.followers, pl(u.followers, 'читатель', 'читателя', 'читателей'), 'fcount')}${st(u.following, 'в подписках')}</div></section>
+    <div class="stats">${st(u.posts, pl(u.posts, 'запись', 'записи', 'записей'))}${st(u.followers, pl(u.followers, 'читатель', 'читателя', 'читателей'), 'fcount')}${st(u.following ?? '—', 'в подписках')}</div></section>
     ${photos}${own ? composerHTML() : ''}
     <div class="list" id="feed">${pinned ? `<div class="pinned"><div class="pinlab">${I.pin}<span>Закреплённая запись</span></div>${postHTML(pinned)}</div>` : ''}${feedList(list, pinned ? '' : emptyBox('Постов пока нет', own ? 'Опубликуйте первый — прямо здесь, на своей странице.' : ''))}</div>`;
   const feed = document.getElementById('feed');
@@ -543,12 +552,159 @@ async function profileView(username) {
   }
 }
 
-// «Настройки»: закладки, уведомления, выход
-function settingsView() {
-  const main = page({ key: 'me', title: titleOf('Настройки'), back: true, backTo: '#/u/' + me.username });
-  const row = (href, icon, label) => `<a href="${href}" class="mrow2">${icon}<span>${label}</span></a>`;
-  main.innerHTML = `<section class="card menu">${row('#/bookmarks', I.bookmark, 'Закладки')}${row('#/notifications', I.bell, 'Уведомления')}<button type="button" class="mrow2 danger" id="logout3">${I.out}<span>Выйти</span></button></section>`;
-  document.getElementById('logout3').onclick = logout;
+// ---------- настройки ----------
+const PV_OPTS = [['all', 'Все'], ['friends', 'Только друзья'], ['none', 'Никто']];
+const THEMES = [['system', 'Как в системе'], ['dark', 'Тёмная'], ['black', 'Deep Black'], ['light', 'Светлая']];
+const VBADGE = `<svg class="vb" viewBox="0 0 24 24" aria-label="Подтверждённый профиль" role="img"><title>Подтверждённый профиль</title><path fill="currentColor" d="M12 1.8l2.6 1.9 3.2-.1 1 3 2.6 1.9-1 3 1 3-2.6 1.9-1 3-3.2-.1L12 22.2l-2.6-1.9-3.2.1-1-3-2.6-1.9 1-3-1-3 2.6-1.9 1-3 3.2.1z"/><path fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M8 12.3l2.7 2.7L16.2 9.5"/></svg>`;
+const nameHTML = (u) => esc(u.name || u.username) + (u.verified ? VBADGE : '');
+const getFont = () => { try { return Math.min(130, Math.max(85, +localStorage.getItem('kolo_fs') || 100)); } catch { return 100; } };
+const applyFont = () => document.documentElement.style.setProperty('--fs', getFont() / 100);
+applyFont();
+
+function askPassword({ title, text, ok, danger }) { // окно «введите пароль»; возвращает пароль или null
+  return new Promise((resolve) => {
+    const d = document.createElement('dialog'); d.className = 'sheetdlg';
+    d.innerHTML = `<form method="dialog" id="pwf"><h2>${esc(title)}</h2><p class="muted pdlg">${esc(text)}</p>
+      <div class="pdlgf"><label class="field"><span>Пароль</span><input name="password" type="password" autocomplete="current-password" required></label></div>
+      <div class="actions"><button type="button" class="btn line" id="pwx">Отмена</button><button class="btn ${danger ? 'dng' : ''}" type="submit">${esc(ok)}</button></div></form>`;
+    document.body.appendChild(d); d.showModal();
+    let out = null;
+    d.querySelector('#pwx').onclick = () => d.close();
+    d.querySelector('#pwf').onsubmit = (e) => { e.preventDefault(); out = d.querySelector('input').value; d.close(); };
+    d.addEventListener('close', () => { d.remove(); resolve(out); });
+  });
+}
+const switchRow = (k, label, desc, on, dis = false) => `<label class="srow ${dis ? 'dis' : ''}"><span class="stxt"><b>${label}</b>${desc ? `<small>${desc}</small>` : ''}</span><span class="tgl"><input type="checkbox" data-k="${k}" ${on ? 'checked' : ''} ${dis ? 'disabled' : ''}><i></i></span></label>`;
+const selectRow = (k, label, cur) => `<label class="srow"><span class="stxt"><b>${label}</b></span><select class="sel" data-k="${k}">${PV_OPTS.map(([v, t]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`;
+
+async function settingsView(sub) {
+  const v = view, SUBS = { account: 'Аккаунт', privacy: 'Приватность', notifications: 'Уведомления', appearance: 'Внешний вид' };
+  sub = SUBS[sub] ? sub : '';
+  const main = page({ key: 'me', title: titleOf(sub ? SUBS[sub] : 'Настройки'), back: true, backTo: sub ? '#/settings' : '#/u/' + me.username });
+  if (!sub) {
+    const row = (href, icon, label, hint) => `<a href="${href}" class="mrow2">${icon}<span>${label}${hint ? `<small>${hint}</small>` : ''}</span><i class="chev">›</i></a>`;
+    main.innerHTML = `<section class="card menu">${row('#/settings/account', I.user, 'Аккаунт', 'Имя, почта, пароль, верификация')}${row('#/settings/privacy', I.lock, 'Приватность', 'Кто видит страницу и пишет вам')}${row('#/settings/notifications', I.bell, 'Уведомления', 'Push, звуки, типы событий')}${row('#/settings/appearance', I.sun, 'Внешний вид', 'Тема, размер шрифта, кэш')}</section>
+      <section class="card menu">${row('#/bookmarks', I.bookmark, 'Закладки')}<button type="button" class="mrow2 danger" id="logout3">${I.out}<span>Выйти</span></button></section>`;
+    document.getElementById('logout3').onclick = logout;
+    return;
+  }
+  if (sub === 'appearance') return appearanceSettings(main);
+  main.innerHTML = '<div class="empty">Загрузка…</div>';
+  let st;
+  try { st = await api('/settings'); } catch (e) { return void (v === view && (main.innerHTML = errBox(e))); }
+  if (v !== view) return;
+  const save = async (patch, revert) => { try { Object.assign(me, patch); await api('/settings', { method: 'PUT', body: patch }); toast('Сохранено'); } catch (err) { toast(err.message); revert?.(); } };
+  if (sub === 'privacy') {
+    main.innerHTML = `<p class="muted shint">Друзья — это люди, на которых вы подписаны и которые подписаны на вас.</p>
+      <section class="card sgroup">${selectRow('pv_profile', 'Кто видит мою страницу и подробную информацию', st.pv_profile)}${selectRow('pv_dm', 'Кто может писать мне личные сообщения', st.pv_dm)}${selectRow('pv_comments', 'Кто может комментировать мои посты', st.pv_comments)}${selectRow('pv_lists', 'Кто видит мои подписки', st.pv_lists)}</section>
+      <section class="card sgroup">${switchRow('hidden', 'Скрытый профиль', 'Вас не найдут через поиск и не покажут в рекомендациях. Ссылку на страницу по-прежнему можно открыть', st.hidden)}</section>
+      <p class="muted shint">Закладки видны только вам.</p>`;
+    main.addEventListener('change', (e) => { const k = e.target.dataset.k; if (!k) return; const prev = st[k], val = e.target.type === 'checkbox' ? +e.target.checked : e.target.value; st[k] = val; save({ [k]: val }, () => { st[k] = prev; e.target.type === 'checkbox' ? (e.target.checked = !!prev) : (e.target.value = prev); }); });
+    return;
+  }
+  if (sub === 'notifications') {
+    const paint = () => {
+      const off = !!st.n_off;
+      main.innerHTML = `<div id="pushcard"></div>
+        <section class="card sgroup">${switchRow('n_off', 'Не беспокоить', 'Выключает всплывающие уведомления и push. Лента событий останется в разделе «Уведомления»', off)}</section>
+        <section class="card sgroup"><h3 class="sgh">Что присылать</h3>${switchRow('n_likes', 'Лайки и репосты', '', st.n_likes, off)}${switchRow('n_comments', 'Комментарии, ответы и упоминания', '@username', st.n_comments, off)}${switchRow('n_msgs', 'Новые сообщения', '', st.n_msgs, off)}${switchRow('n_follows', 'Новые подписчики', '', st.n_follows, off)}</section>
+        <section class="card sgroup"><h3 class="sgh">Конфиденциальность</h3>${switchRow('n_preview', 'Показывать текст на экране блокировки', 'Если выключить, в push будет только «Новое сообщение» или тип события', st.n_preview, off)}</section>`;
+      renderPushCard();
+    };
+    paint();
+    main.addEventListener('change', (e) => { const k = e.target.dataset.k; if (!k) return; const prev = st[k]; st[k] = +e.target.checked; save({ [k]: st[k] }, () => { st[k] = prev; paint(); }); if (k === 'n_off') paint(); });
+    return;
+  }
+  // аккаунт
+  const a = st.account;
+  const verifyBlock = a.verified ? `<div class="vstate ok">${VBADGE}<div><b>Профиль подтверждён</b><small class="muted">Рядом с вашим именем стоит синяя галочка</small></div></div>`
+    : a.verify_req ? `<div class="vstate"><span class="pi">${I.check}</span><div><b>Заявка на рассмотрении</b><small class="muted">Отправлена ${esc(a.verify_req)}. Мы ответим галочкой на странице</small></div></div>`
+    : `<p class="muted shint0">Галочка показывает, что страница принадлежит настоящему автору или проекту.</p>
+       <label class="field"><span>Кто вы и чем известны <small class="muted" id="vcount">0 / 300</small></span><textarea id="vnote" rows="3" maxlength="300" placeholder="Ссылки на другие соцсети, сайт, публикации о вас"></textarea></label>
+       <button class="btn" id="vsend">Подать заявку</button>`;
+  main.innerHTML = `<section class="card sgroup"><h3 class="sgh">Профиль</h3>
+      <div class="sbody"><label class="field"><span>Имя</span><input id="aname" maxlength="40" value="${esc(me.name)}"></label>
+      <label class="field"><span>Никнейм</span><input id="auser" maxlength="20" value="${esc(me.username)}" autocapitalize="none" spellcheck="false"><small class="hint" id="uhint"></small></label>
+      <button class="btn" id="asave">Сохранить</button></div></section>
+    <section class="card sgroup"><h3 class="sgh">Почта и телефон</h3><div class="sbody">
+      <label class="field"><span>Email</span><input id="aemail" type="email" maxlength="120" value="${esc(a.email)}" placeholder="name@example.com" autocomplete="email"></label>
+      <button class="btn line" id="emsave">Сохранить почту</button>
+      <label class="field sgap"><span>Телефон</span><input id="aphone" type="tel" maxlength="20" value="${esc(a.phone)}" placeholder="+79991234567" autocomplete="tel"><small class="hint">Номер сохраняется в профиле. Подтверждение по SMS пока не подключено</small></label>
+      <button class="btn line" id="phsave">Сохранить номер</button></div></section>
+    <section class="card sgroup"><h3 class="sgh">Пароль</h3><div class="sbody">
+      <label class="field"><span>Текущий пароль</span><input id="pold" type="password" autocomplete="current-password"></label>
+      <label class="field"><span>Новый пароль</span><input id="pnew" type="password" autocomplete="new-password"><div class="meter" id="pmeter" data-level="0"><i></i><i></i><i></i></div><small class="hint" id="pnhint">Не короче 8 символов</small></label>
+      <button class="btn" id="pwsave">Сменить пароль</button></div></section>
+    <section class="card sgroup"><h3 class="sgh">Верификация</h3><div class="sbody">${verifyBlock}</div></section>
+    <section class="card sgroup"><h3 class="sgh">Деактивация и удаление</h3><div class="sbody">
+      <p class="muted shint0"><b>Заморозить страницу</b> — вас не будет видно другим, пока вы снова не войдёте. Данные сохранятся.</p>
+      <button class="btn line" id="deact">Заморозить страницу</button>
+      <p class="muted shint0 sgap"><b>Удалить аккаунт</b> навсегда: посты, комментарии, сообщения, подписки и фото будут стёрты без возможности восстановления.</p>
+      <button class="btn dng" id="delacc">Удалить аккаунт</button></div></section>`;
+  const $ = (id) => document.getElementById(id), busyBtn = async (b, fn) => { b.disabled = true; try { await fn(); } catch (err) { toast(err.message); } b.disabled = false; };
+  const uh = $('uhint'), ui = $('auser'); let ut, useq = 0, uok = true;
+  const hint = (cls, t) => { uh.className = 'hint ' + cls; uh.textContent = t; };
+  ui.addEventListener('input', () => {
+    clearTimeout(ut); const val = ui.value.trim(); uok = false;
+    if (val.toLowerCase() === me.username.toLowerCase()) { uok = true; return hint('', ''); }
+    if (!/^[A-Za-z0-9_]{3,20}$/.test(val)) return hint('bad', val.length < 3 ? 'Минимум 3 символа' : 'Только латиница, цифры и _');
+    hint('', 'Проверяем…'); const my = ++useq;
+    ut = setTimeout(async () => { try { const r = await api('/username-available?u=' + encodeURIComponent(val)); if (my !== useq) return; uok = r.available; hint(r.available ? 'ok' : 'bad', r.available ? 'Никнейм свободен' : 'Этот никнейм уже занят'); } catch { if (my === useq) hint('', ''); } }, 350);
+  });
+  $('asave').onclick = (e) => busyBtn(e.target, async () => {
+    const name = $('aname').value.trim(), val = ui.value.trim();
+    if (val.toLowerCase() !== me.username.toLowerCase() || val !== me.username) {
+      if (!uok && val.toLowerCase() !== me.username.toLowerCase()) return toast('Проверьте никнейм');
+      if (val !== me.username) { await api('/me/username', { method: 'PUT', body: { username: val } }); me.username = val; }
+    }
+    if (name !== me.name) { const fd = new FormData(); fd.append('name', name); fd.append('bio', me.bio || ''); me = await api('/me', { method: 'PUT', body: fd }); }
+    toast('Сохранено'); sideData = null; app.innerHTML = ''; route();
+  });
+  $('emsave').onclick = (e) => busyBtn(e.target, async () => {
+    const pw = await askPassword({ title: 'Подтвердите пароль', text: 'Чтобы сменить почту, введите текущий пароль.', ok: 'Подтвердить' }); if (pw === null) return;
+    await api('/me/email', { method: 'PUT', body: { email: $('aemail').value.trim(), password: pw } }); me.email = $('aemail').value.trim().toLowerCase(); toast('Почта сохранена');
+  });
+  $('phsave').onclick = (e) => busyBtn(e.target, async () => { const r = await api('/me/phone', { method: 'PUT', body: { phone: $('aphone').value } }); $('aphone').value = r.phone; toast('Номер сохранён'); });
+  const pn = $('pnew'), pnh = $('pnhint'), LV = ['Не короче 8 символов', 'Слабый: добавьте цифры, заглавные или длину', 'Нормальный', 'Надёжный'];
+  pn.addEventListener('input', () => { const l = pwLevel(pn.value); $('pmeter').dataset.level = pn.value ? l : 0; pnh.className = 'hint ' + (pn.value && l ? (l === 1 ? 'bad' : 'ok') : ''); pnh.textContent = pn.value ? (l ? LV[l] : 'Слишком короткий: минимум 8 символов') : LV[0]; });
+  $('pwsave').onclick = (e) => busyBtn(e.target, async () => {
+    if (!$('pold').value) return toast('Введите текущий пароль');
+    await api('/me/password', { method: 'POST', body: { password: $('pold').value, new_password: pn.value } });
+    $('pold').value = pn.value = ''; pn.dispatchEvent(new Event('input')); toast('Пароль изменён');
+  });
+  const vn = $('vnote');
+  if (vn) { vn.addEventListener('input', () => { $('vcount').textContent = `${vn.value.length} / 300`; }); $('vsend').onclick = (e) => busyBtn(e.target, async () => { await api('/me/verify-request', { method: 'POST', body: { note: vn.value } }); toast('Заявка отправлена'); settingsView('account'); }); }
+  $('deact').onclick = async () => {
+    const pw = await askPassword({ title: 'Заморозить страницу?', text: 'Страница исчезнет для других, пока вы снова не войдёте в аккаунт.', ok: 'Заморозить' }); if (pw === null) return;
+    try { await api('/me/deactivate', { method: 'POST', body: { password: pw } }); logout(); toast('Страница заморожена. Войдите, чтобы вернуть её'); } catch (err) { toast(err.message); }
+  };
+  $('delacc').onclick = async () => {
+    const pw = await askPassword({ title: 'Удалить аккаунт навсегда?', text: 'Все ваши данные будут стёрты. Это нельзя отменить. Введите пароль для подтверждения.', ok: 'Удалить навсегда', danger: true }); if (pw === null) return;
+    try { await api('/me', { method: 'DELETE', body: { password: pw } }); logout(); toast('Аккаунт удалён'); } catch (err) { toast(err.message); }
+  };
+}
+
+function appearanceSettings(main) {
+  const th = getTheme(), fs = getFont();
+  main.innerHTML = `<section class="card sgroup"><h3 class="sgh">Тема оформления</h3><div class="sbody"><div class="pills thm">${THEMES.map(([k, t]) => `<label><input type="radio" name="theme" value="${k}" ${k === th ? 'checked' : ''}><span>${t}</span></label>`).join('')}</div>
+      <small class="hint">Deep Black — чисто чёрный фон: экономит заряд на OLED-экранах.</small></div></section>
+    <section class="card sgroup"><h3 class="sgh">Размер шрифта в ленте</h3><div class="sbody"><div class="fsrow"><small>А</small><input type="range" id="fsr" min="85" max="130" step="5" value="${fs}" aria-label="Размер шрифта"><big>А</big><b id="fsv">${fs}%</b></div>
+      <div class="card fsprev"><p class="ptext">Так будет выглядеть текст записей, комментариев и сообщений.</p></div></div></section>
+    <section class="card sgroup"><label class="srow"><span class="stxt"><b>Язык интерфейса</b><small>Английская версия появится позже</small></span><select class="sel" id="lang"><option value="ru" selected>Русский</option><option value="en" disabled>English (скоро)</option></select></label></section>
+    <section class="card sgroup"><h3 class="sgh">Память устройства</h3><div class="sbody"><p class="muted shint0">Удалит сохранённые на телефоне картинки, ленту и оболочку приложения. Вход в аккаунт сохранится.</p><button class="btn line" id="clrc">Очистить кэш картинок и сообщений</button></div></section>`;
+  main.addEventListener('change', (e) => { if (e.target.name !== 'theme') return; try { localStorage.setItem('kolo_theme', e.target.value); } catch {} applyTheme(); });
+  const r = document.getElementById('fsr');
+  r.addEventListener('input', () => { try { localStorage.setItem('kolo_fs', r.value); } catch {} applyFont(); document.getElementById('fsv').textContent = r.value + '%'; });
+  document.getElementById('clrc').onclick = async (e) => {
+    e.target.disabled = true;
+    try {
+      if ('caches' in window) for (const k of await caches.keys()) await caches.delete(k);
+      for (const k of Object.keys(feedCache)) delete feedCache[k];
+      sideData = null;
+      toast('Кэш очищен');
+    } catch { toast('Не удалось очистить кэш'); }
+    e.target.disabled = false;
+  };
 }
 
 // все фотографии пользователя (картинки из его записей)
@@ -648,7 +804,8 @@ async function postView(id) {
   const roots = data.comments.filter((c) => !c.parent_id);
   main.innerHTML = `<div class="list">${postHTML(data.post)}</div>
     <section class="card comments" id="comments">${roots.map(threadHTML).join('') || '<div class="nocom muted">Комментариев пока нет. Напишите первый</div>'}</section>
-    <form class="cform" id="cform">
+    ${data.can_comment === false ? `<div class="cform nocomm muted">${I.lock}<span>Автор ограничил комментарии к этому посту</span></div>` : ''}
+    <form class="cform" id="cform" ${data.can_comment === false ? 'hidden' : ''}>
       <div class="chip" id="rchip" hidden><span></span><button type="button" class="icon" id="rcancel" aria-label="Отменить ответ">${I.x}</button></div>
       <div class="mpreview" id="cprev" hidden><img alt="Выбранная картинка"><button type="button" class="icon" id="crm" aria-label="Убрать картинку">${I.x}</button></div>
       <div class="crow"><label class="icon attach" title="Картинка или GIF" aria-label="Прикрепить картинку или GIF">${I.image}<input type="file" accept="image/*" id="cfile" hidden></label>
@@ -1133,7 +1290,7 @@ document.addEventListener('click', async (e) => {
       delete feedCache.following; sideData = null;
       if (folB.id === 'fbtn') {
         folB.textContent = r.isFollowing ? 'Вы читаете' : 'Читать'; folB.classList.toggle('line', r.isFollowing);
-        document.getElementById('fcount').textContent = r.followers;
+        const fc = document.getElementById('fcount'); if (fc) fc.textContent = r.followers;
       } else { folB.textContent = r.isFollowing ? 'Вы читаете' : 'Читать'; folB.classList.toggle('line', !r.isFollowing); }
       folB.disabled = false;
     }
@@ -1228,7 +1385,7 @@ async function route() {
   if (a === 'notifications') return notificationsView(b);
   if (a === 'messages') return b ? threadView(decodeURIComponent(b)) : messagesView();
   if (a === 'bookmarks') return bookmarksView();
-  if (a === 'settings') return settingsView();
+  if (a === 'settings') return settingsView(b);
   if (a === 'photos' && b) return photosView(decodeURIComponent(b));
   if (a === 'popular') return popularView(b);
   if (a === 'new') return newPostView();
