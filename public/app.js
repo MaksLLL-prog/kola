@@ -239,7 +239,7 @@ function postHTML(p) {
       <div class="pmeta"><a class="pname" href="#/u/${esc(p.username)}">${nameHTML(p)}</a>
         <div class="psub"><span class="pun">@${esc(p.username)}</span><a class="ptime" href="#/post/${p.id}" title="${esc(new Date(p.created_at).toLocaleString('ru'))}">${ago(p.created_at)}</a></div></div>
       <button class="icon more" data-more aria-label="Ещё">${I.more}</button>
-      ${p.username === me.username ? `<button class="icon del" data-del="${p.id}" aria-label="Удалить запись">${I.trash}</button>` : ''}</header>
+      ${p.username === me.username || me.admin ? `<button class="icon del" data-del="${p.id}" aria-label="Удалить запись">${I.trash}</button>` : ''}</header>
     <div class="pbody">
       ${p.text ? `<p class="ptext">${linkify(p.text)}</p>` : ''}
       ${p.image ? `<img class="pimg" data-zoom src="${esc(p.image)}" alt="Изображение к записи" loading="lazy" decoding="async">` : ''}
@@ -578,17 +578,18 @@ const switchRow = (k, label, desc, on, dis = false) => `<label class="srow ${dis
 const selectRow = (k, label, cur) => `<label class="srow"><span class="stxt"><b>${label}</b></span><select class="sel" data-k="${k}">${PV_OPTS.map(([v, t]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`;
 
 async function settingsView(sub) {
-  const v = view, SUBS = { account: 'Аккаунт', privacy: 'Приватность', notifications: 'Уведомления', appearance: 'Внешний вид' };
+  const v = view, SUBS = { account: 'Аккаунт', privacy: 'Приватность', notifications: 'Уведомления', appearance: 'Внешний вид', ...(me.admin ? { admin: 'Админ-панель' } : {}) };
   sub = SUBS[sub] ? sub : '';
   const main = page({ key: 'me', title: titleOf(sub ? SUBS[sub] : 'Настройки'), back: true, backTo: sub ? '#/settings' : '#/u/' + me.username });
   if (!sub) {
     const row = (href, icon, label, hint) => `<a href="${href}" class="mrow2">${icon}<span>${label}${hint ? `<small>${hint}</small>` : ''}</span><i class="chev">›</i></a>`;
-    main.innerHTML = `<section class="card menu">${row('#/settings/account', I.user, 'Аккаунт', 'Имя, почта, пароль, верификация')}${row('#/settings/privacy', I.lock, 'Приватность', 'Кто видит страницу и пишет вам')}${row('#/settings/notifications', I.bell, 'Уведомления', 'Push, звуки, типы событий')}${row('#/settings/appearance', I.sun, 'Внешний вид', 'Тема, размер шрифта, кэш')}</section>
+    main.innerHTML = `<section class="card menu">${row('#/settings/account', I.user, 'Аккаунт', 'Имя, почта, пароль, верификация')}${row('#/settings/privacy', I.lock, 'Приватность', 'Кто видит страницу и пишет вам')}${row('#/settings/notifications', I.bell, 'Уведомления', 'Push, звуки, типы событий')}${row('#/settings/appearance', I.sun, 'Внешний вид', 'Тема, размер шрифта, кэш')}${me.admin ? row('#/settings/admin', I.check, 'Админ-панель', 'Заявки на галочку, пользователи') : ''}</section>
       <section class="card menu">${row('#/bookmarks', I.bookmark, 'Закладки')}<button type="button" class="mrow2 danger" id="logout3">${I.out}<span>Выйти</span></button></section>`;
     document.getElementById('logout3').onclick = logout;
     return;
   }
   if (sub === 'appearance') return appearanceSettings(main);
+  if (sub === 'admin') return adminPanel(main, v);
   main.innerHTML = '<div class="empty">Загрузка…</div>';
   let st;
   try { st = await api('/settings'); } catch (e) { return void (v === view && (main.innerHTML = errBox(e))); }
@@ -681,6 +682,33 @@ async function settingsView(sub) {
   $('delacc').onclick = async () => {
     const pw = await askPassword({ title: 'Удалить аккаунт навсегда?', text: 'Все ваши данные будут стёрты. Это нельзя отменить. Введите пароль для подтверждения.', ok: 'Удалить навсегда', danger: true }); if (pw === null) return;
     try { await api('/me', { method: 'DELETE', body: { password: pw } }); logout(); toast('Аккаунт удалён'); } catch (err) { toast(err.message); }
+  };
+}
+
+async function adminPanel(main, v, q = '') {
+  main.innerHTML = '<div class="empty">Загрузка…</div>';
+  let d;
+  try { d = await api('/admin/overview' + (q ? '?q=' + encodeURIComponent(q) : '')); } catch (e) { return void (v === view && (main.innerHTML = errBox(e))); }
+  if (v !== view) return;
+  const act = (u, ...btns) => `<div class="aact" data-u="${esc(u.username)}">${btns.join('')}</div>`;
+  const b = (a, t, cls = 'line') => `<button class="btn sm ${cls}" data-a="${a}">${t}</button>`;
+  const head = (u) => `<a class="sug" href="#/u/${esc(u.username)}">${avatar(u, 'sm')}<span class="who"><b>${nameHTML(u)}</b><span>@${esc(u.username)}${u.admin ? ' · админ' : ''}${u.frozen ? ' · заморожен' : ''}</span></span></a>`;
+  main.innerHTML = `<section class="card sgroup"><h3 class="sgh">Заявки на галочку · ${d.requests.length}</h3><div class="sbody apl">${d.requests.length ? d.requests.map((u) => `<div class="areq">${head(u)}<p class="anote">${esc(u.request.note)}</p><small class="muted">${esc(u.request.at.slice(0, 10))}</small>${act(u, b('ok', 'Одобрить', ''), b('no', 'Отклонить'))}</div>`).join('') : '<p class="muted shint0">Новых заявок нет.</p>'}</div></section>
+    <section class="card sgroup"><h3 class="sgh">Пользователи · всего ${d.total}</h3><div class="sbody apl"><form class="card search inner" id="aq" style="margin:0 0 8px">${I.search}<input type="search" placeholder="Имя или никнейм" value="${esc(q)}" autocomplete="off"></form>
+      ${d.users.map((u) => `<div class="areq">${head(u)}${act(u, b(u.verified ? 'unver' : 'ver', u.verified ? 'Снять галочку' : 'Дать галочку'), b(u.frozen ? 'unfreeze' : 'freeze', u.frozen ? 'Разморозить' : 'Заморозить'), u.admin || u.username === me.username ? '' : b('del', 'Удалить', 'line dng'))}</div>`).join('') || '<p class="muted shint0">Никого не нашли.</p>'}</div></section>
+    <p class="muted shint">Админ также может удалять любые посты кнопкой-корзиной. Логины админов задаются переменной ADMINS на сервере.</p>`;
+  document.getElementById('aq').onsubmit = (e) => { e.preventDefault(); adminPanel(main, v, e.target.querySelector('input').value.trim()); };
+  main.onclick = async (e) => {
+    const btn = e.target.closest('[data-a]'); if (!btn) return;
+    const name = btn.closest('[data-u]').dataset.u, a = btn.dataset.a, base = '/admin/users/' + encodeURIComponent(name);
+    if (a === 'del' && !confirm(`Удалить аккаунт @${name} навсегда вместе со всеми постами и сообщениями?`)) return;
+    btn.disabled = true;
+    try {
+      if (a === 'del') await api(base, { method: 'DELETE' });
+      else if (a === 'freeze' || a === 'unfreeze') await api(base + '/freeze', { method: 'POST', body: { frozen: a === 'freeze' } });
+      else await api(base + '/verify', { method: 'POST', body: { verified: a === 'ok' || a === 'ver' } });
+      toast('Готово'); adminPanel(main, v, q);
+    } catch (err) { toast(err.message); btn.disabled = false; }
   };
 }
 

@@ -24,6 +24,8 @@ function loadSecret() {
   return fs.readFileSync(f, 'utf8');
 }
 const SECRET = loadSecret();
+const ADMINS = new Set((process.env.ADMINS || '').split(/[,\s]+/).map((x) => x.replace(/^@/, '').toLowerCase()).filter(Boolean)); // логины админов
+if (PROD && !ADMINS.size) console.warn('ADMINS не задан: админ-панель никому не доступна');
 
 const app = express();
 app.disable('x-powered-by');
@@ -112,6 +114,7 @@ const auth = route(async (req, res, next) => {
   try { id = jwt.verify((req.get('Authorization') || '').replace(/^Bearer /, ''), SECRET).id; } catch { throw new HttpError(401, 'Нужно войти в аккаунт'); }
   const user = await db.get('SELECT id, username, name, bio, avatar, onboarded, gender, relationship, partner, website, telegram, life_main, people_main, interests, cover, pinned_post, email, phone, verified, verify_req, deactivated, pv_profile, pv_dm, pv_comments, pv_lists, hidden, n_off, n_likes, n_comments, n_msgs, n_follows, n_preview FROM users WHERE id = @id', { id });
   if (!user || user.deactivated) throw new HttpError(401, 'Нужно войти в аккаунт');
+  user.admin = ADMINS.has(user.username.toLowerCase());
   touchSeen(user.id);
   req.user = user; next();
 });
@@ -269,13 +272,39 @@ app.post('/api/me/verify-request', auth, limitWrites, route(async (req, res) => 
   await db.run('UPDATE users SET verify_req = @v WHERE id = @id', { v, id: req.user.id });
   res.json({ ok: true });
 }));
-// Модерация заявок: без админ-панели. Задайте ADMIN_TOKEN в окружении и вызовите:
-// curl -X POST -H "x-admin-token: …" -H "content-type: application/json" -d '{"username":"anna","verified":true}' /api/admin/verify
-app.post('/api/admin/verify', route(async (req, res) => {
-  const tok = process.env.ADMIN_TOKEN || '', got = String(req.get('x-admin-token') || '');
-  if (!tok || got.length !== tok.length || !crypto.timingSafeEqual(Buffer.from(got), Buffer.from(tok))) throw new HttpError(403, 'Нет доступа');
-  const r = await db.run('UPDATE users SET verified = @v, verify_req = @r WHERE lower(username) = lower(@u)', { v: req.body.verified === false ? 0 : 1, r: '', u: String(req.body.username || '') });
-  res.json({ ok: !!r.changes });
+// ---------- админ-панель: логины в переменной ADMINS ----------
+const adminOnly = route(async (req, res, next) => { if (!req.user.admin) throw new HttpError(403, 'Нужны права администратора'); next(); });
+const ADMIN_COLS = 'id, username, name, avatar, verified, verify_req, deactivated, created_at';
+const adminRow = (u) => ({ username: u.username, name: u.name, avatar: u.avatar, verified: !!u.verified, frozen: !!u.deactivated, created_at: u.created_at, admin: ADMINS.has(u.username.toLowerCase()),
+  request: u.verify_req ? { at: u.verify_req.split('|')[0], note: u.verify_req.split('|').slice(1).join('|') } : null });
+const targetUser = async (name) => { const u = await db.get(`SELECT ${ADMIN_COLS} FROM users WHERE lower(username) = lower(@u)`, { u: String(name) }); if (!u) throw new HttpError(404, 'Пользователь не найден'); return u; };
+app.get('/api/admin/overview', auth, adminOnly, route(async (req, res) => {
+  const q = clean(req.query.q, 50), like = '%' + q.replace(/[\\%_]/g, '\\$&') + '%';
+  const [requests, users, total] = await Promise.all([
+    db.all(`SELECT ${ADMIN_COLS} FROM users WHERE verify_req != '' ORDER BY id`, {}),
+    db.all(`SELECT ${ADMIN_COLS} FROM users WHERE @q = '' OR lower(username) LIKE lower(@l) ESCAPE '\\' OR lower(name) LIKE lower(@l) ESCAPE '\\' ORDER BY id DESC LIMIT 30`, { q, l: like }),
+    count('SELECT CAST(COUNT(*) AS INTEGER) AS n FROM users', {}),
+  ]);
+  res.json({ requests: requests.map(adminRow), users: users.map(adminRow), total });
+}));
+app.post('/api/admin/users/:username/verify', auth, adminOnly, limitWrites, route(async (req, res) => {
+  const u = await targetUser(req.params.username);
+  await db.run("UPDATE users SET verified = @v, verify_req = '' WHERE id = @id", { v: req.body.verified === false ? 0 : 1, id: u.id });
+  res.json({ ok: true });
+}));
+app.post('/api/admin/users/:username/freeze', auth, adminOnly, limitWrites, route(async (req, res) => {
+  const u = await targetUser(req.params.username);
+  if (u.id === req.user.id) throw new HttpError(400, 'Нельзя заморозить себя');
+  await db.run('UPDATE users SET deactivated = @f WHERE id = @id', { f: req.body.frozen === false ? 0 : 1, id: u.id });
+  if (req.body.frozen !== false) dropStreams(u.id);
+  res.json({ ok: true });
+}));
+app.delete('/api/admin/users/:username', auth, adminOnly, limitWrites, route(async (req, res) => {
+  const u = await targetUser(req.params.username);
+  if (u.id === req.user.id) throw new HttpError(400, 'Свой аккаунт удаляйте в настройках аккаунта');
+  if (ADMINS.has(u.username.toLowerCase())) throw new HttpError(400, 'Нельзя удалить другого администратора');
+  await eraseUser(u.id, [u.avatar, (await db.get('SELECT cover FROM users WHERE id = @id', { id: u.id })).cover]);
+  res.json({ ok: true });
 }));
 function dropStreams(id) { for (const r of clients.get(id) || []) r.end(); clients.delete(id); }
 app.post('/api/me/deactivate', auth, limitAuth, route(async (req, res) => {
@@ -284,16 +313,19 @@ app.post('/api/me/deactivate', auth, limitAuth, route(async (req, res) => {
   dropStreams(req.user.id);
   res.json({ ok: true });
 }));
-app.delete('/api/me', auth, limitAuth, route(async (req, res) => {
-  await needPassword(req);
-  const id = req.user.id, p = { id };
-  const files = [req.user.avatar, req.user.cover,
+async function eraseUser(id, own) { // удаляет аккаунт и все его файлы; остальное убирает каскад
+  const p = { id };
+  const files = [...own,
     ...(await db.all('SELECT image FROM posts WHERE user_id = @id AND image IS NOT NULL', p)).map((r) => r.image),
     ...(await db.all('SELECT image FROM comments WHERE user_id = @id AND image IS NOT NULL', p)).map((r) => r.image),
     ...(await db.all('SELECT image FROM messages WHERE (sender_id = @id OR recipient_id = @id) AND image IS NOT NULL', p)).map((r) => r.image)];
   dropStreams(id);
-  await db.run('DELETE FROM users WHERE id = @id', p); // остальное убирает каскад: посты, лайки, комментарии, подписки, сообщения, push-подписки
+  await db.run('DELETE FROM users WHERE id = @id', p);
   for (const f of files) await storage.remove(f).catch(() => {});
+}
+app.delete('/api/me', auth, limitAuth, route(async (req, res) => {
+  await needPassword(req);
+  await eraseUser(req.user.id, [req.user.avatar, req.user.cover]);
   res.json({ ok: true });
 }));
 
@@ -532,7 +564,7 @@ app.get('/api/posts/:id', auth, route(async (req, res) => {
 }));
 
 app.delete('/api/posts/:id', auth, route(async (req, res) => {
-  const p = await db.get('SELECT id, image FROM posts WHERE id = @id AND user_id = @u', { id: +req.params.id || 0, u: req.user.id });
+  const p = await db.get('SELECT id, image FROM posts WHERE id = @id AND (user_id = @u OR @adm = 1)', { id: +req.params.id || 0, u: req.user.id, adm: req.user.admin ? 1 : 0 });
   if (!p) throw new HttpError(404, 'Пост не найден');
   await db.run('UPDATE users SET pinned_post = NULL WHERE pinned_post = @id', { id: p.id });
   await db.run('DELETE FROM posts WHERE id = @id', { id: p.id });
