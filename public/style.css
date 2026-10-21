@@ -809,3 +809,20 @@ dialog.drawdlg { width: min(900px, 100vw); max-width: 100vw; max-height: 100dvh;
   .card.composer { border-radius: 16px; }
 }
 @media (min-width: 901px) { .nav .ni { display: inline-flex; font-weight: inherit; } }
+
+/* v2.8.1: профиль на телефоне — кнопки не наезжают на шапку; подробности сворачиваются */
+.pdet { border-top: 1px solid var(--line); margin-top: 10px; }
+.pdet summary { list-style: none; display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 16px; cursor: pointer; color: var(--tag); font-weight: 500; font-size: 14px; }
+.pdet summary::-webkit-details-marker { display: none; }
+.pdet .pdc, .pdet[open] .pdo { display: none; }
+.pdet[open] .pdc { display: inline; }
+.pdet summary .chev { margin-left: auto; color: var(--muted); transition: transform .2s; }
+.pdet[open] summary .chev { transform: rotate(90deg); }
+.pdet .pfacts { margin-top: 0; border-top: 1px solid var(--line); padding-top: 0; }
+@media (max-width: 520px) {
+  .pcbar { flex-wrap: wrap; }
+  .pcbar .pcbtns { flex: 1 1 100%; margin: 12px 0 4px; flex-wrap: nowrap; }
+  .pcbar .pcbtns .btn { flex: 1; min-width: 0; padding: 0 10px; }
+  .pcbar.hascover { margin-top: -40px; }
+  .pcover .pcedit { bottom: auto; top: 10px; }
+}

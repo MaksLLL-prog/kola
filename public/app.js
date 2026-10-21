@@ -534,7 +534,7 @@ async function profileView(username) {
       <div class="pcbtns">${own ? `<button class="btn line" id="edit">Редактировать</button><a class="btn line" href="#/settings">${I.gear}Настройки</a>` : `<button class="btn ${u.isFollowing ? 'line' : ''}" data-follow="${esc(u.username)}" id="fbtn">${u.isFollowing ? 'Вы читаете' : 'Читать'}</button>${u.canDM ? `<a class="btn line" href="#/messages/${esc(u.username)}">Написать</a>` : '<button class="btn line" disabled title="Автор ограничил личные сообщения">Сообщения закрыты</button>'}`}</div></div>
     <div class="pcinfo"><h2>${nameHTML(u)}</h2><div class="muted pcsub">@${esc(u.username)} · <span class="seen ${u.online ? 'on' : ''}">${seenText(u)}</span></div>
       ${u.bio ? `<p class="bio">${linkify(u.bio)}</p>` : ''}</div>
-    ${rows.length ? `<dl class="pfacts">${rows.join('')}</dl>` : ''}
+    ${rows.length ? `<details class="pdet"><summary><span class="pdo">Подробная информация</span><span class="pdc">Скрыть</span><i class="chev">›</i></summary><dl class="pfacts">${rows.join('')}</dl></details>` : ''}
     <div class="stats">${st(u.posts, pl(u.posts, 'запись', 'записи', 'записей'))}${st(u.followers, pl(u.followers, 'читатель', 'читателя', 'читателей'), 'fcount')}${st(u.following ?? '—', 'в подписках')}</div></section>
     ${photos}${own ? composerHTML() : ''}
     <div class="list" id="feed">${pinned ? `<div class="pinned"><div class="pinlab">${I.pin}<span>Закреплённая запись</span></div>${postHTML(pinned)}</div>` : ''}${feedList(list, pinned ? '' : emptyBox('Постов пока нет', own ? 'Опубликуйте первый — прямо здесь, на своей странице.' : ''))}</div>`;
