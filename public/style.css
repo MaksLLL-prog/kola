@@ -835,3 +835,20 @@ dialog.drawdlg { width: min(900px, 100vw); max-width: 100vw; max-height: 100dvh;
 .anote { margin: 4px 0 2px; font-size: 14px; overflow-wrap: anywhere; white-space: pre-wrap; }
 .aact { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .aact .btn { width: auto; flex: 1 1 auto; min-height: 38px; }
+
+/* v2.8.2: записи — отдельные карточки с промежутком, закреплённая выделена рамкой */
+.list { gap: 12px; }
+.card.post { border: 1px solid var(--line-2); border-radius: 16px; padding: 14px 16px 4px; background: linear-gradient(180deg, rgba(255, 255, 255, .03), rgba(255, 255, 255, .008)); }
+:root[data-theme='light'] .card.post { background: #fff; }
+.main > .list > .post:first-child, .main > .composer + .list { margin-top: 0; }
+.pinned, .pinned .post { border-radius: 16px; }
+.pinned { margin: 0; padding: 0; background: none; border: 0; }
+.pinlab { padding: 0 4px 8px; }
+.pinned .post { border-color: var(--accent); box-shadow: 0 0 0 3px var(--soft); padding-top: 14px; }
+.card.comments .post, .comments { border-radius: 16px; }
+.card.skel.post { padding: 14px 16px 12px; }
+@media (max-width: 900px) {
+  .pinned { margin: 0; padding: 0; }
+  .list { gap: 10px; }
+  .card.post { padding: 14px 14px 2px; }
+}
